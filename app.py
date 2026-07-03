@@ -65,20 +65,15 @@ def run_expression_warp_pipeline(
     )
 
 
+def run_frequency_analysis_pipeline(image_source: str) -> dict:
+    """Run preprocessing followed by Fourier-domain analysis."""
+    image_request = request_image_input(image_source)
+    preprocessed = preprocess_image(image_request["image"])
+    return analyze_frequency_content(preprocessed["rgb_image"])
+
+
 def run_pipeline(image_source: str) -> dict:
-    """Run the planned end-to-end DSP workflow on a single input image.
-
-    Parameters
-    ----------
-    image_source:
-        Path or identifier for the user-supplied facial image.
-
-    Returns
-    -------
-    dict
-        A structured dictionary containing placeholders for intermediate and
-        final outputs.
-    """
+    """Run the planned end-to-end DSP workflow on a single input image."""
     image_request = request_image_input(image_source)
     preprocessed = preprocess_image(image_request["image"])
     face_crop = detect_face_region(preprocessed["image"])
@@ -105,4 +100,4 @@ def run_pipeline(image_source: str) -> dict:
 
 
 if __name__ == "__main__":
-    print("Use run_preprocessing_pipeline(...), run_face_detection_pipeline(...), run_landmark_pipeline(...), or run_expression_warp_pipeline(...).")
+    print("Use run_preprocessing_pipeline(...), run_face_detection_pipeline(...), run_landmark_pipeline(...), run_expression_warp_pipeline(...), or run_frequency_analysis_pipeline(...).")

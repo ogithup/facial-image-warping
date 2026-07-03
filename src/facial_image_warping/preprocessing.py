@@ -3,6 +3,8 @@
 from pathlib import Path
 
 import cv2
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -153,3 +155,4 @@ def preprocess_image(
         "processed_image_path": str(processed_image_path),
         "status": "preprocessed",
     }
+

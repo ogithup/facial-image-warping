@@ -1,6 +1,6 @@
 # Facial Image Warping
 
-Bu repo, **Facial Image Warping, Aging, and Expression Transformation** projesinin ilk uc sprintinin calisan temelini icerir. Su ana kadar odak noktasi, yuzu degistirmekten once veriyi **dogru almak**, **DSP acisindan standardize etmek**, **yuz bolgesini ayirmak** ve **yuzu landmark noktalariyla temsil etmek** oldu.
+Bu repo, **Facial Image Warping, Aging, and Expression Transformation** projesinin ilk bes sprintinin calisan temelini icerir. Su ana kadar odak noktasi, yuzu degistirmekten once veriyi **dogru almak**, **DSP acisindan standardize etmek**, **yuz bolgesini ayirmak**, **yuzu landmark noktalariyla temsil etmek**, **geometric warping** uygulamak ve son olarak **frekans alaninda analiz etmek** oldu.
 
 Mevcut durumda tamamlanan katmanlar:
 
@@ -8,18 +8,18 @@ Mevcut durumda tamamlanan katmanlar:
 2. `Sprint 2` - Face detection ve face crop
 3. `Sprint 3` - Facial landmark detection ve landmark export
 4. `Sprint 4` - Geometric facial image warping
+5. `Sprint 5` - Frequency domain DSP analysis
 
 Henuz tamamlanmayan katmanlar:
 
 - Aging / de-aging
-- Fourier analysis
 - Quantitative evaluation
 
 ## DSP Mantigi
 
 Bu projede goruntu, klasik bir fotograf dosyasi gibi degil, **2 boyutlu sayisal sinyal** olarak ele alinir. Kurulan akis su mantiga dayanir:
 
-`User Input -> Image Acquisition -> Preprocessing -> ROI Extraction -> Landmark Representation -> Geometric Warping -> Future DSP Stages`
+`User Input -> Image Acquisition -> Preprocessing -> ROI Extraction -> Landmark Representation -> Geometric Warping -> Frequency Analysis -> Future DSP Stages`
 
 Bu zincirde su ana kadar yapilan isler:
 
@@ -28,8 +28,9 @@ Bu zincirde su ana kadar yapilan isler:
 - **ROI extraction**: tum goruntu yerine yalnizca yuz bolgesini secme
 - **Geometric representation**: yuzu landmark ile parametrik olarak ifade etme
 - **Triangle warping**: landmark displacement ile affine triangle deformasyonu
+- **Frequency analysis**: uzamsal alandan frekans alanina gecip spektral enerji olcme
 
-Bu sayede ileride yapilacak warping, aging ve frekans analizi islemleri dogrudan ham goruntuye degil, temizlenmis ve anlamli hale getirilmis yuz verisine uygulanir.
+Bu sayede ileride yapilacak aging, de-aging ve kalite analizi islemleri dogrudan ham goruntuye degil, temizlenmis ve anlamli hale getirilmis yuz verisine uygulanir.
 
 ## Su Ana Kadarki Mimari
 
@@ -45,7 +46,9 @@ Bu sayede ileride yapilacak warping, aging ve frekans analizi islemleri dogrudan
    MediaPipe Face Mesh ile landmark cikarir, JSON/CSV export yapar.
 5. `geometric_warping.py`
    Target landmark uretir, Delaunay triangulation kurar, triangle affine warp uygular.
-6. `app.py`
+6. `fourier_analysis.py`
+   FFT, magnitude spectrum, spektral enerji ve CSV export uretir.
+7. `app.py`
    Sprint bazli pipeline giris noktalarini saglar.
 
 ### Pipeline giris noktalari
@@ -54,6 +57,7 @@ Bu sayede ileride yapilacak warping, aging ve frekans analizi islemleri dogrudan
 - `run_face_detection_pipeline(...)`
 - `run_landmark_pipeline(...)`
 - `run_expression_warp_pipeline(...)`
+- `run_frequency_analysis_pipeline(...)`
 
 ## Ornek Akis
 
@@ -138,6 +142,25 @@ Bu asama su kavramlari ogretir:
 - coordinate mapping
 - mesh-based deformation
 
+### 8. Frequency domain analysis
+
+Sprint 5 ile goruntu uzamsal alandan frekans alanina tasinir. Burada:
+
+- grayscale goruntu uzerinde `2D FFT` hesaplanir
+- sifir frekans bileþeni merkeze kaydirilir
+- `log magnitude spectrum` elde edilir
+- toplam, dusuk ve yuksek frekans enerjileri hesaplanir
+- `high / low frequency ratio` bulunur
+- sonuclar CSV olarak disa aktarilir
+
+Bu asama su kavramlari ogretir:
+
+- spatial domain
+- frequency domain
+- magnitude spectrum
+- low / high frequency separation
+- spectral energy analysis
+
 ## Landmark Koordinatlarinin Mantigi
 
 MediaPipe, landmark noktalarini once **normalize koordinat** olarak verir:
@@ -194,6 +217,19 @@ Ama OpenCV cizimi ve crop islemleri icin bu koordinatlar piksele cevrilmelidir. 
 - before-after comparison kaydetme
 - intensity kontrollu deformasyon
 
+### Sprint 5
+
+- grayscale frequency analysis
+- 2D FFT
+- FFT shift
+- log magnitude spectrum
+- side-by-side spectrum visualization
+- total spectral energy
+- low-frequency energy
+- high-frequency energy
+- high / low energy ratio
+- CSV export
+
 ## Dosya Yapisi
 
 ```text
@@ -209,6 +245,7 @@ facial-image-warping/
 |  |- facial_image_warping/
 |     |- face_detection.py
 |     |- geometric_warping.py
+|     |- fourier_analysis.py
 |     |- input_module.py
 |     |- landmark_detection.py
 |     |- preprocessing.py
@@ -267,6 +304,12 @@ python -c "from app import run_landmark_pipeline; r = run_landmark_pipeline('sam
 python -c "from app import run_expression_warp_pipeline; r = run_expression_warp_pipeline('samples/test_face_1.jpg', transformation='smile_enhancement', intensity=0.7); print(r['operation']); print(r['warped_image_path']); print(r['comparison_image_path'])"
 ```
 
+### Sprint 5
+
+```bash
+python -c "from app import run_frequency_analysis_pipeline; r = run_frequency_analysis_pipeline('samples/test_face_1.jpg'); print(r['total_energy']); print(r['high_low_ratio']); print(r['spectrum_path']); print(r['csv_path'])"
+```
+
 ## Test Verileri
 
 Repo icinde test icin uc ornek yuz vardir:
@@ -275,7 +318,7 @@ Repo icinde test icin uc ornek yuz vardir:
 - `samples/test_face_2.png`
 - `samples/test_face_3.jpg`
 
-Bu gorseller GUI olmadan, komut satiri uzerinden preprocessing, face detection, landmark detection ve warping katmanlarini tek tek dogrulamak icin kullanilir.
+Bu gorseller GUI olmadan, komut satiri uzerinden preprocessing, face detection, landmark detection, warping ve frequency analysis katmanlarini tek tek dogrulamak icin kullanilir.
 
 ## Muhendislik Ozeti
 
@@ -287,10 +330,10 @@ Su an sistemin en onemli teknik kazanimlari:
 - yuz ROI'sini ayirma
 - yuzu landmark tabanli geometrik temsil haline getirme
 - triangle mesh tabanli warping altyapisi kurma
-- ilerideki warping ve DSP asamalari icin saglam veri hatti kurma
+- spektral enerji analizi yapma
+- ilerideki DSP asamalari icin saglam veri hatti kurma
 
 Bir sonraki dogal asama:
 
 - aging/de-aging filtresi
-- Fourier tabanli analiz
 - MSE / PSNR / SSIM degerlendirmesi
