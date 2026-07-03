@@ -1,6 +1,6 @@
-# Facial Image Warping
+﻿# Facial Image Warping
 
-Bu repo, **Facial Image Warping, Aging, and Expression Transformation** projesinin ilk sekiz sprintinin calisan temelini icerir. Su ana kadar odak noktasi, yuzu degistirmekten once veriyi **dogru almak**, **DSP acisindan standardize etmek**, **yuz bolgesini ayirmak**, **yuzu landmark noktalariyla temsil etmek**, **geometric warping** uygulamak ve son olarak **frekans alaninda analiz etmek** oldu.
+Bu repo, **Facial Image Warping, Aging, and Expression Transformation** projesinin ilk on sprintinin calisan temelini icerir. Su ana kadar odak noktasi, yuzu degistirmekten once veriyi **dogru almak**, **DSP acisindan standardize etmek**, **yuz bolgesini ayirmak**, **yuzu landmark noktalariyla temsil etmek**, **geometric warping** uygulamak ve son olarak **frekans alaninda analiz etmek** oldu.
 
 Mevcut durumda tamamlanan katmanlar:
 
@@ -12,11 +12,13 @@ Mevcut durumda tamamlanan katmanlar:
 6. `Sprint 6` - Aging and de-aging simulation
 7. `Sprint 7` - Quantitative evaluation module
 8. `Sprint 8` - Streamlit GUI
+9. `Sprint 9` - Real-time webcam integration
+10. `Sprint 10` - Advanced AI-based expression transfer
 
 Henuz tamamlanmayan katmanlar:
 
-- Real-time webcam integration
-- Advanced AI-based expression transfer
+- GAN/diffusion tabanli generative expression transfer
+- Full production-grade browser webcam streaming
 
 ## DSP Mantigi
 
@@ -35,7 +37,7 @@ Bu zincirde su ana kadar yapilan isler:
 - **Quantitative evaluation**: donusum farkini MSE, PSNR ve SSIM ile olcme
 - **Interactive UI**: ayni pipelinei Streamlit arayuzu uzerinden parametre kontrollu calistirma
 
-Bu sayede aging, de-aging, kalite analizi ve arayuz uzerinden yapilan deneyler dogrudan ham goruntuye degil, temizlenmis ve anlamli hale getirilmis yuz verisine uygulanir.
+Bu sayede aging, de-aging, kalite analizi, webcam denemeleri ve referans ifadeye dayali transfer islemleri dogrudan ham goruntuye degil, temizlenmis ve anlamli hale getirilmis yuz verisine uygulanir.
 
 ## Su Ana Kadarki Mimari
 
@@ -60,7 +62,11 @@ Bu sayede aging, de-aging, kalite analizi ve arayuz uzerinden yapilan deneyler d
 9. `app.py`
    Sprint bazli pipeline giris noktalarini saglar.
 10. `streamlit_app.py`
-   Upload, transform, spectrum ve metric tablo arayuzunu saglar.
+   Upload, webcam capture, transfer, spectrum ve metric tablo arayuzunu saglar.
+11. `expression_transfer.py`
+   Referans yuzden ifade geometrisini source yuze aktarir.
+12. `webcam_demo.py`
+   OpenCV tabanli gercek zamanli webcam donusum demosunu calistirir.
 
 ### Pipeline giris noktalari
 
@@ -72,6 +78,7 @@ Bu sayede aging, de-aging, kalite analizi ve arayuz uzerinden yapilan deneyler d
 - `run_aging_pipeline(...)`
 - `run_deaging_pipeline(...)`
 - `run_analysis_pipeline(...)`
+- `run_reference_expression_transfer_pipeline(...)`
 
 ## Ornek Akis
 
@@ -277,6 +284,22 @@ Ama OpenCV cizimi ve crop islemleri icin bu koordinatlar piksele cevrilmelidir. 
 - metric table
 - CSV download
 
+### Sprint 9
+
+- OpenCV webcam capture
+- real-time face crop preview
+- real-time aging/de-aging and warping demo
+- reference expression transfer in webcam mode
+- keyboard-controlled demo exit
+
+### Sprint 10
+
+- reference image based expression transfer
+- AI-assisted landmark-driven geometry transfer
+- source-reference landmark visualization
+- transfer region selection
+- transfer explanation output
+
 ## Dosya Yapisi
 
 ```text
@@ -381,6 +404,28 @@ python -c "from app import run_analysis_pipeline; r = run_analysis_pipeline('sam
 streamlit run streamlit_app.py
 ```
 
+
+Modern ayri GUI katmani:
+
+```bash
+streamlit run gui/dashboard.py
+```
+### Sprint 9
+
+```bash
+python webcam_demo.py --transformation aging --intensity 0.6
+```
+
+```bash
+python webcam_demo.py --transformation reference_expression_transfer --reference-image samples/test_face_2.png --intensity 0.75
+```
+
+### Sprint 10
+
+```bash
+python -c "from app import run_reference_expression_transfer_pipeline; r = run_reference_expression_transfer_pipeline('samples/test_face_1.jpg', 'samples/test_face_2.png', blend_factor=0.7, show_landmarks=True, selected_regions=['eyes','eyebrows','nose','lips']); print(r['transformation']['operation']); print(r['metrics']['mse']); print(r['metrics']['psnr']); print(r['transformation']['warped_image_path'])"
+```
+
 ## Test Verileri
 
 Repo icinde test icin uc ornek yuz vardir:
@@ -389,7 +434,7 @@ Repo icinde test icin uc ornek yuz vardir:
 - `samples/test_face_2.png`
 - `samples/test_face_3.jpg`
 
-Bu gorseller GUI olmadan, komut satiri uzerinden preprocessing, face detection, landmark detection, warping, frequency analysis, aging/de-aging ve evaluation katmanlarini tek tek dogrulamak icin kullanilir.
+Bu gorseller GUI olmadan, komut satiri uzerinden preprocessing, face detection, landmark detection, warping, frequency analysis, aging/de-aging, webcam ve reference-transfer katmanlarini tek tek dogrulamak icin kullanilir.
 
 ## Muhendislik Ozeti
 
@@ -409,6 +454,8 @@ Su an sistemin en onemli teknik kazanimlari:
 
 Bir sonraki dogal asama:
 
-- real-time webcam manipulation
-- GAN/diffusion tabanli AI aging alternatifleri
+- GAN/diffusion tabanli generative expression transfer
+- browser-icinde tam akici webcam streaming
+- production-grade model secimi ve hiz optimizasyonu
+
 

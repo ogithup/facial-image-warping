@@ -1,4 +1,4 @@
-"""Tests for Sprint 1-8 image processing pipeline stages."""
+"""Tests for Sprint 1-10 image processing pipeline stages."""
 
 from pathlib import Path
 import json
@@ -10,13 +10,20 @@ from app import (
     run_aging_pipeline,
     run_analysis_pipeline,
     run_deaging_pipeline,
+    run_reference_expression_transfer_pipeline,
     run_expression_warp_pipeline,
     run_face_detection_pipeline,
     run_frequency_analysis_pipeline,
     run_landmark_pipeline,
     run_preprocessing_pipeline,
+    run_realtime_frame_pipeline,
+    prepare_reference_expression_payload,
 )
 from facial_image_warping.aging_filter import apply_aging_filter, apply_deaging_filter
+from facial_image_warping.expression_transfer import (
+    apply_reference_expression_transfer,
+    create_expression_transfer_targets,
+)
 from facial_image_warping.evaluation import (
     compute_mse,
     compute_psnr,
@@ -362,6 +369,83 @@ def test_evaluation_artifacts_are_exported(tmp_path: Path, monkeypatch) -> None:
     assert difference_path.exists()
     assert csv_path.exists()
 
+
+
+def test_create_expression_transfer_targets_blends_selected_regions() -> None:
+    source = _make_dense_landmarks()
+    reference = [dict(item) for item in source]
+    reference[61]["x"] += 20
+    reference[61]["y"] -= 10
+    targets = create_expression_transfer_targets(source, reference, blend_factor=0.5, regions=["lips"])
+    assert targets[61]["x"] == source[61]["x"] + 10
+    assert targets[61]["y"] == source[61]["y"] - 5
+
+
+def test_apply_reference_expression_transfer_creates_outputs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    face_image = _make_face_image()
+    source_landmarks = _make_dense_landmarks()
+    reference_landmarks = [dict(item) for item in source_landmarks]
+    for index in [61, 291, 70, 300]:
+        reference_landmarks[index]["x"] += 8
+        reference_landmarks[index]["y"] -= 4
+    result = apply_reference_expression_transfer(
+        face_image,
+        source_landmarks,
+        reference_landmarks,
+        blend_factor=0.7,
+        regions=["lips", "eyebrows"],
+        save_outputs=True,
+    )
+    assert result["operation"] == "reference_expression_transfer"
+    assert Path(result["warped_image_path"]).exists()
+    assert Path(result["comparison_image_path"]).exists()
+
+
+def test_prepare_reference_expression_payload_returns_face_and_landmarks(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    reference_path = _create_sample_image(tmp_path, "reference_payload.png")
+    monkeypatch.setattr("facial_image_warping.face_detection.load_haar_cascade", lambda: _FakeCascadeClassifier(np.array([[1, 1, 10, 10]])))
+    monkeypatch.setattr("facial_image_warping.landmark_detection.detect_face_mesh", lambda image, **kwargs: _FakeFaceMeshResults())
+    payload = prepare_reference_expression_payload(str(reference_path), show_landmarks=True, selected_regions=["eyes", "lips"])
+    assert payload["face_detection"]["face_image"]["pixels"].shape == (512, 512, 3)
+    assert payload["landmarks"]["landmark_count"] == 468
+
+
+def test_run_realtime_frame_pipeline_returns_live_preview(monkeypatch) -> None:
+    frame = np.zeros((180, 220, 3), dtype=np.uint8)
+    frame[40:150, 60:170] = 160
+    monkeypatch.setattr("facial_image_warping.face_detection.load_haar_cascade", lambda: _FakeCascadeClassifier(np.array([[60, 40, 110, 110]])))
+    monkeypatch.setattr("facial_image_warping.landmark_detection.detect_face_mesh", lambda image, **kwargs: _FakeFaceMeshResults())
+    result = run_realtime_frame_pipeline(
+        frame,
+        transformation="aging",
+        intensity=0.5,
+        show_landmarks=True,
+        selected_regions=["eyes", "nose", "lips"],
+    )
+    assert result["original_frame"].shape[0] == frame.shape[0]
+    assert result["transformed_frame"].shape[1] == frame.shape[1]
+    assert result["composite_frame"].shape[1] == frame.shape[1] * 2
+
+
+def test_reference_expression_transfer_pipeline_runs_with_mocked_dependencies(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    source_path = _create_sample_image(tmp_path, "source_face.png")
+    reference_path = _create_sample_image(tmp_path, "reference_face.png")
+    monkeypatch.setattr("facial_image_warping.face_detection.load_haar_cascade", lambda: _FakeCascadeClassifier(np.array([[1, 1, 10, 10]])))
+    monkeypatch.setattr("facial_image_warping.landmark_detection.detect_face_mesh", lambda image, **kwargs: _FakeFaceMeshResults())
+    result = run_reference_expression_transfer_pipeline(
+        str(source_path),
+        str(reference_path),
+        blend_factor=0.65,
+        show_landmarks=True,
+        selected_regions=["eyes", "eyebrows", "lips"],
+    )
+    assert result["transformation"]["operation"] == "reference_expression_transfer"
+    assert result["metrics"]["mse"] >= 0
+    assert result["source_landmarks"] is not None
+    assert result["reference_landmarks"] is not None
 
 def test_run_analysis_pipeline_returns_metrics_and_frequency(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
