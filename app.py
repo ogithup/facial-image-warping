@@ -18,6 +18,19 @@ from facial_image_warping.evaluation import evaluate_transformation
 from facial_image_warping.visualization import build_result_summary
 
 
+def run_preprocessing_pipeline(image_source: str) -> dict:
+    """Run only the Sprint 1 image input and preprocessing stages."""
+    image_request = request_image_input(image_source)
+    return preprocess_image(image_request["image"])
+
+
+def run_face_detection_pipeline(image_source: str) -> dict:
+    """Run Sprint 1 preprocessing followed by Sprint 2 face detection."""
+    image_request = request_image_input(image_source)
+    preprocessed = preprocess_image(image_request["image"])
+    return detect_face_region(preprocessed["rgb_image"])
+
+
 def run_pipeline(image_source: str) -> dict:
     """Run the planned end-to-end DSP workflow on a single input image.
 
@@ -58,6 +71,4 @@ def run_pipeline(image_source: str) -> dict:
 
 
 if __name__ == "__main__":
-    example_result = run_pipeline("sample_face.png")
-    print("Pipeline scaffold executed successfully.")
-    print(f"Available result keys: {sorted(example_result.keys())}")
+    print("Use run_preprocessing_pipeline(<image_path>) or run_face_detection_pipeline(<image_path>).")

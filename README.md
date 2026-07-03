@@ -2,6 +2,9 @@
 
 This project provides a professional Python starter architecture for a digital signal processing (DSP) oriented facial image transformation system. It is designed to support expression editing, geometric facial warping, frequency-based aging and de-aging, Fourier analysis, and quantitative evaluation in a modular way.
 
+Sprint 1 now implements the image input and preprocessing foundations using OpenCV, NumPy, Pillow, and Matplotlib.
+Sprint 2 now implements classical face detection using OpenCV Haar Cascade.
+
 ## System Purpose
 
 The system processes a frontal face image through a structured DSP workflow:
@@ -91,4 +94,74 @@ The completed implementation is expected to produce:
 
 ## Development Notes
 
-This repository currently contains placeholder implementations with clear docstrings so Sprint 0 can focus on architecture and planning. Future sprints should replace placeholders with working implementations based on libraries such as OpenCV, NumPy, SciPy, scikit-image, MediaPipe, or Dlib.
+Sprint 1 includes:
+
+- loading JPG and PNG files
+- validating file format and existence
+- converting between BGR, RGB, and grayscale
+- resizing images to a standard resolution
+- normalizing pixel values to the `[0, 1]` range
+- generating and saving histograms
+- saving processed artifacts into `outputs/`
+
+Sprint 2 includes:
+
+- frontal-face detection with OpenCV Haar Cascade
+- grayscale conversion for detection input
+- bounding box generation
+- ROI cropping for the detected face
+- normalized face resizing to a standard output size
+- explicit error handling when no face is detected
+- saving detection previews into `outputs/faces/`
+
+## Quick Start
+
+1. Create and activate a virtual environment.
+2. Install the package with development dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+3. Run the tests:
+
+```bash
+pytest
+```
+
+4. Use Sprint 1 from Python:
+
+```python
+from app import run_preprocessing_pipeline
+
+result = run_preprocessing_pipeline("path/to/face.png")
+print(result["processed_image_path"])
+print(result["histogram_path"])
+```
+
+Processed files are written under `outputs/`.
+
+Use Sprint 2 from Python:
+
+```python
+from app import run_face_detection_pipeline
+
+result = run_face_detection_pipeline("path/to/face.png")
+print(result["bounding_box"])
+print(result["cropped_face_path"])
+```
+
+Detected-face previews are written under `outputs/faces/`.
+
+Sprint1 commands
+deactivate
+Remove-Item .venv -Recurse -Force
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
+pip install -e ".[dev]"
+pytest -q
+
+Sprint2 commands
+python -c "import cv2; print(cv2.__version__); print(hasattr(cv2, 'CascadeClassifier'))"
+python -c "from app import run_face_detection_pipeline; r = run_face_detection_pipeline('ornek_yuz.png'); print(r['bounding_box']); print(r['cropped_face_path'])"
