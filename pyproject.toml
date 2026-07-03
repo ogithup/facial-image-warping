@@ -12,15 +12,16 @@ authors = [
   { name = "OpenAI Codex" }
 ]
 dependencies = [
-  "matplotlib>=3.8",
-  "numpy>=1.26",
+  "matplotlib>=3.11,<4",
+  "mediapipe==0.10.9",
+  "numpy>=1.26,<2.0",
   "opencv-python>=4.10,<5",
-  "Pillow>=10.0",
+  "Pillow>=12.3,<13",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.0",
+  "pytest>=9,<10",
 ]
 
 [tool.setuptools]

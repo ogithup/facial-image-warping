@@ -1,6 +1,7 @@
 """Face localization and cropping utilities."""
 
 from pathlib import Path
+import ctypes
 
 import cv2
 import numpy as np
@@ -9,10 +10,26 @@ import numpy as np
 FACES_OUTPUT_DIR = Path("outputs/faces")
 
 
+def _to_windows_short_path(path: Path) -> str:
+    """Convert a path to its Windows short form for OpenCV file APIs.
+
+    Some OpenCV file-loading paths on Windows still fail when Unicode
+    characters are present. The short 8.3 path often avoids that issue.
+    If conversion fails, the original path string is returned.
+    """
+    path_str = str(path)
+    buffer_size = 4096
+    buffer = ctypes.create_unicode_buffer(buffer_size)
+    result = ctypes.windll.kernel32.GetShortPathNameW(path_str, buffer, buffer_size)
+    if result == 0 or result > buffer_size:
+        return path_str
+    return buffer.value
+
+
 def load_haar_cascade() -> cv2.CascadeClassifier:
     """Load the default OpenCV frontal-face Haar cascade classifier."""
     cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
-    classifier = cv2.CascadeClassifier(str(cascade_path))
+    classifier = cv2.CascadeClassifier(_to_windows_short_path(cascade_path))
     if classifier.empty():
         raise RuntimeError(f"Failed to load Haar Cascade from {cascade_path}")
     return classifier
@@ -114,7 +131,14 @@ def save_face_preview(image: dict, output_path: str | Path) -> Path:
     """Save a BGR face preview image to disk."""
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(output_file), image["pixels"]):
+    encoded, buffer = cv2.imencode(output_file.suffix or ".png", image["pixels"])
+    if not encoded:
+        raise ValueError(f"Failed to encode face preview for {output_file}")
+    try:
+        buffer.tofile(output_file)
+    except OSError as exc:
+        raise ValueError(f"Failed to save face preview to {output_file}") from exc
+    if not output_file.exists():
         raise ValueError(f"Failed to save face preview to {output_file}")
     return output_file
 

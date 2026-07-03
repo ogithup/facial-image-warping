@@ -4,6 +4,7 @@ This project provides a professional Python starter architecture for a digital s
 
 Sprint 1 now implements the image input and preprocessing foundations using OpenCV, NumPy, Pillow, and Matplotlib.
 Sprint 2 now implements classical face detection using OpenCV Haar Cascade.
+Sprint 3 now implements facial landmark detection using MediaPipe Face Mesh.
 
 ## System Purpose
 
@@ -114,6 +115,15 @@ Sprint 2 includes:
 - explicit error handling when no face is detected
 - saving detection previews into `outputs/faces/`
 
+Sprint 3 includes:
+
+- 468-point facial landmark detection with MediaPipe Face Mesh
+- full landmark point visualization
+- optional region-only overlays for eyes, eyebrows, nose, lips, jawline, and cheeks
+- landmark coordinate export to JSON and CSV
+- toggle-based visualization control
+- saving landmark outputs into `outputs/landmarks/`
+
 ## Quick Start
 
 1. Create and activate a virtual environment.
@@ -153,6 +163,23 @@ print(result["cropped_face_path"])
 
 Detected-face previews are written under `outputs/faces/`.
 
+Use Sprint 3 from Python:
+
+```python
+from app import run_landmark_pipeline
+
+result = run_landmark_pipeline(
+    "path/to/face.png",
+    show_full_mesh=True,
+    selected_regions=["eyes", "lips", "nose"],
+)
+print(result["landmark_count"])
+print(result["json_path"])
+print(result["csv_path"])
+```
+
+Landmark visualizations and exports are written under `outputs/landmarks/`.
+
 Sprint1 commands
 deactivate
 Remove-Item .venv -Recurse -Force
@@ -165,3 +192,8 @@ pytest -q
 Sprint2 commands
 python -c "import cv2; print(cv2.__version__); print(hasattr(cv2, 'CascadeClassifier'))"
 python -c "from app import run_face_detection_pipeline; r = run_face_detection_pipeline('ornek_yuz.png'); print(r['bounding_box']); print(r['cropped_face_path'])"
+
+Sprint3 sample faces commands
+python -c "from app import run_preprocessing_pipeline; r = run_preprocessing_pipeline('samples/test_face_1.jpg'); print(r['processed_image_path'])"
+python -c "from app import run_face_detection_pipeline; r = run_face_detection_pipeline('samples/test_face_1.jpg'); print(r['bounding_box']); print(r['cropped_face_path'])"
+python -c "from app import run_landmark_pipeline; r = run_landmark_pipeline('samples/test_face_1.jpg', show_full_mesh=True, selected_regions=['eyes','nose','lips']); print(r['landmark_count']); print(r['json_path']); print(r['csv_path'])"

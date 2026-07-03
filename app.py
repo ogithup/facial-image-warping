@@ -31,6 +31,22 @@ def run_face_detection_pipeline(image_source: str) -> dict:
     return detect_face_region(preprocessed["rgb_image"])
 
 
+def run_landmark_pipeline(
+    image_source: str,
+    show_full_mesh: bool = True,
+    selected_regions: list[str] | None = None,
+) -> dict:
+    """Run preprocessing, face detection, and MediaPipe landmark extraction."""
+    image_request = request_image_input(image_source)
+    preprocessed = preprocess_image(image_request["image"])
+    face_crop = detect_face_region(preprocessed["rgb_image"])
+    return detect_landmarks(
+        face_crop["face_image"],
+        show_full_mesh=show_full_mesh,
+        selected_regions=selected_regions,
+    )
+
+
 def run_pipeline(image_source: str) -> dict:
     """Run the planned end-to-end DSP workflow on a single input image.
 
@@ -71,4 +87,4 @@ def run_pipeline(image_source: str) -> dict:
 
 
 if __name__ == "__main__":
-    print("Use run_preprocessing_pipeline(<image_path>) or run_face_detection_pipeline(<image_path>).")
+    print("Use run_preprocessing_pipeline(...), run_face_detection_pipeline(...), or run_landmark_pipeline(...).")
