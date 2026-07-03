@@ -1,4 +1,4 @@
-"""Tests for Sprint 1 preprocessing, Sprint 2 face detection, and Sprint 3 landmarks."""
+"""Tests for Sprint 1 preprocessing, Sprint 2 face detection, Sprint 3 landmarks, and Sprint 4 warping."""
 
 from pathlib import Path
 
@@ -7,8 +7,14 @@ from PIL import Image
 
 import json
 
-from app import run_face_detection_pipeline, run_landmark_pipeline, run_preprocessing_pipeline
+from app import run_expression_warp_pipeline, run_face_detection_pipeline, run_landmark_pipeline, run_preprocessing_pipeline
 from facial_image_warping.face_detection import crop_face_region, detect_face_region, resize_face_crop
+from facial_image_warping.geometric_warping import (
+    apply_delaunay_triangulation,
+    apply_expression_warp,
+    create_target_landmarks,
+    warp_triangle,
+)
 from facial_image_warping.landmark_detection import (
     detect_landmarks,
     export_landmarks_to_csv,
@@ -64,7 +70,6 @@ def test_convert_to_grayscale_returns_single_channel(tmp_path: Path) -> None:
 
 def test_preprocessing_pipeline_creates_output_artifacts(tmp_path: Path, monkeypatch) -> None:
     """The Sprint 1 pipeline should save its processed image and histogram."""
-    project_root = Path(__file__).resolve().parents[1]
     monkeypatch.chdir(tmp_path)
     image_path = _create_sample_image(tmp_path, "face.png")
 
@@ -196,6 +201,23 @@ def _make_face_image() -> dict:
     }
 
 
+def _make_dense_landmarks() -> list[dict]:
+    """Create 468 synthetic landmarks spread across a face-sized canvas."""
+    landmarks = []
+    for index in range(468):
+        landmarks.append(
+            {
+                "index": index,
+                "x": 10 + (index % 18) * 6,
+                "y": 10 + ((index // 18) % 26) * 4,
+                "z": 0.0,
+                "normalized_x": 0.1,
+                "normalized_y": 0.1,
+            }
+        )
+    return landmarks
+
+
 def test_detect_landmarks_exports_visualization_and_coordinate_files(tmp_path: Path, monkeypatch) -> None:
     """Landmark detection should export image, JSON, and CSV artifacts."""
     monkeypatch.chdir(tmp_path)
@@ -263,3 +285,76 @@ def test_run_landmark_pipeline_uses_face_detection_and_landmark_steps(tmp_path: 
 
     assert result["landmark_count"] == 468
     assert result["selected_regions"] == ["lips"]
+
+
+def test_create_target_landmarks_changes_expression_points() -> None:
+    """Expression target generation should displace key facial landmarks."""
+    landmarks = _make_dense_landmarks()
+    targets = create_target_landmarks(landmarks, transformation="smile_enhancement", intensity=1.0)
+
+    assert targets[61]["x"] < landmarks[61]["x"]
+    assert targets[291]["x"] > landmarks[291]["x"]
+
+
+def test_apply_delaunay_triangulation_returns_triangle_indices() -> None:
+    """Delaunay triangulation should produce non-empty triangle connectivity."""
+    landmarks = _make_dense_landmarks()[:80]
+    triangles = apply_delaunay_triangulation((128, 128, 3), landmarks)
+
+    assert triangles
+    assert all(len(triangle) == 3 for triangle in triangles)
+
+
+def test_warp_triangle_modifies_destination_region() -> None:
+    """Affine triangle warp should paint data into the destination image."""
+    source = np.zeros((32, 32, 3), dtype=np.uint8)
+    source[5:20, 5:20] = (255, 255, 255)
+    destination = np.zeros((32, 32, 3), dtype=np.float32)
+
+    warp_triangle(
+        source,
+        destination,
+        [(5, 5), (20, 5), (5, 20)],
+        [(8, 8), (24, 7), (7, 24)],
+    )
+
+    assert destination.sum() > 0
+
+
+def test_apply_expression_warp_creates_output_images(tmp_path: Path, monkeypatch) -> None:
+    """Expression warping should save warped and comparison images."""
+    monkeypatch.chdir(tmp_path)
+    face_image = _make_face_image()
+    landmarks = _make_dense_landmarks()
+
+    result = apply_expression_warp(
+        face_image,
+        landmarks,
+        transformation="eyebrow_raising",
+        intensity=0.7,
+        save_outputs=True,
+    )
+
+    assert result["operation"] == "eyebrow_raising"
+    assert Path(result["warped_image_path"]).exists()
+    assert Path(result["comparison_image_path"]).exists()
+
+
+def test_expression_warp_pipeline_runs_with_mocked_face_and_landmarks(tmp_path: Path, monkeypatch) -> None:
+    """The Sprint 4 pipeline should chain into the geometric warper."""
+    monkeypatch.chdir(tmp_path)
+    image_path = _create_sample_image(tmp_path, "warp_face.png")
+
+    monkeypatch.setattr(
+        "facial_image_warping.face_detection.load_haar_cascade",
+        lambda: _FakeCascadeClassifier(np.array([[1, 1, 20, 20]])),
+    )
+    monkeypatch.setattr(
+        "facial_image_warping.landmark_detection.detect_face_mesh",
+        lambda image, **kwargs: _FakeFaceMeshResults(),
+    )
+
+    result = run_expression_warp_pipeline(str(image_path), transformation="lip_widening", intensity=0.6)
+
+    assert result["operation"] == "lip_widening"
+    assert result["image"]["pixels"].shape[2] == 3

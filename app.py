@@ -47,6 +47,24 @@ def run_landmark_pipeline(
     )
 
 
+def run_expression_warp_pipeline(
+    image_source: str,
+    transformation: str = "smile_enhancement",
+    intensity: float = 0.5,
+) -> dict:
+    """Run preprocessing, face detection, landmarks, and geometric warping."""
+    image_request = request_image_input(image_source)
+    preprocessed = preprocess_image(image_request["image"])
+    face_crop = detect_face_region(preprocessed["rgb_image"])
+    landmarks = detect_landmarks(face_crop["face_image"], show_full_mesh=False, selected_regions=["eyes", "lips"])
+    return apply_expression_warp(
+        face_crop["face_image"],
+        landmarks["landmarks"],
+        transformation=transformation,
+        intensity=intensity,
+    )
+
+
 def run_pipeline(image_source: str) -> dict:
     """Run the planned end-to-end DSP workflow on a single input image.
 
@@ -87,4 +105,4 @@ def run_pipeline(image_source: str) -> dict:
 
 
 if __name__ == "__main__":
-    print("Use run_preprocessing_pipeline(...), run_face_detection_pipeline(...), or run_landmark_pipeline(...).")
+    print("Use run_preprocessing_pipeline(...), run_face_detection_pipeline(...), run_landmark_pipeline(...), or run_expression_warp_pipeline(...).")
