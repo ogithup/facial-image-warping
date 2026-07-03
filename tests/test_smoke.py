@@ -1,4 +1,4 @@
-"""Tests for Sprint 1-5 image processing pipeline stages."""
+"""Tests for Sprint 1-8 image processing pipeline stages."""
 
 from pathlib import Path
 import json
@@ -7,11 +7,23 @@ import numpy as np
 from PIL import Image
 
 from app import (
+    run_aging_pipeline,
+    run_analysis_pipeline,
+    run_deaging_pipeline,
     run_expression_warp_pipeline,
     run_face_detection_pipeline,
     run_frequency_analysis_pipeline,
     run_landmark_pipeline,
     run_preprocessing_pipeline,
+)
+from facial_image_warping.aging_filter import apply_aging_filter, apply_deaging_filter
+from facial_image_warping.evaluation import (
+    compute_mse,
+    compute_psnr,
+    compute_ssim,
+    create_image_difference_visualization,
+    evaluate_transformation,
+    export_evaluation_to_csv,
 )
 from facial_image_warping.face_detection import crop_face_region, detect_face_region, resize_face_crop
 from facial_image_warping.fourier_analysis import (
@@ -292,3 +304,71 @@ def test_frequency_analysis_pipeline_runs_on_sample_image(tmp_path: Path, monkey
     result = run_frequency_analysis_pipeline(str(image_path))
     assert Path(result["spectrum_path"]).exists()
     assert Path(result["csv_path"]).exists()
+
+
+def test_apply_aging_filter_creates_output_and_explanation(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = apply_aging_filter(_make_face_image(), intensity=0.8)
+    assert result["mode"] == "aging"
+    assert Path(result["output_path"]).exists()
+    assert result["filter_explanation"]
+
+
+def test_apply_deaging_filter_creates_output_and_explanation(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = apply_deaging_filter(_make_face_image(), intensity=0.6)
+    assert result["mode"] == "deaging"
+    assert Path(result["output_path"]).exists()
+    assert result["filter_explanation"]
+
+
+def test_aging_and_deaging_pipelines_run_on_sample_image(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    image_path = _create_sample_image(tmp_path, "aging_face.png")
+    monkeypatch.setattr("facial_image_warping.face_detection.load_haar_cascade", lambda: _FakeCascadeClassifier(np.array([[1, 1, 10, 10]])))
+    aging_result = run_aging_pipeline(str(image_path), intensity=0.7)
+    deaging_result = run_deaging_pipeline(str(image_path), intensity=0.4)
+    assert Path(aging_result["output_path"]).exists()
+    assert Path(deaging_result["output_path"]).exists()
+
+
+def test_compute_mse_returns_expected_value() -> None:
+    original = {"pixels": np.zeros((4, 4, 3), dtype=np.uint8), "color_space": "BGR", "file_name": "orig.png"}
+    transformed = {"pixels": np.full((4, 4, 3), 10, dtype=np.uint8), "color_space": "BGR", "file_name": "trans.png"}
+    assert compute_mse(original, transformed) == 100.0
+
+
+def test_compute_psnr_returns_infinite_for_identical_images() -> None:
+    original = {"pixels": np.zeros((4, 4, 3), dtype=np.uint8), "color_space": "BGR", "file_name": "orig.png"}
+    transformed = {"pixels": np.zeros((4, 4, 3), dtype=np.uint8), "color_space": "BGR", "file_name": "trans.png"}
+    assert compute_psnr(original, transformed) == float("inf")
+
+
+def test_compute_ssim_returns_one_for_identical_images() -> None:
+    original = {"pixels": np.zeros((12, 12, 3), dtype=np.uint8), "color_space": "BGR", "file_name": "orig.png"}
+    transformed = {"pixels": np.zeros((12, 12, 3), dtype=np.uint8), "color_space": "BGR", "file_name": "trans.png"}
+    assert compute_ssim(original, transformed) == 1.0
+
+
+def test_evaluation_artifacts_are_exported(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    original = _make_face_image()
+    transformed = {**_make_face_image(), "pixels": np.clip(_make_face_image()["pixels"] + 20, 0, 255).astype(np.uint8)}
+    results = evaluate_transformation(original, transformed, save_outputs=True)
+    difference_path = create_image_difference_visualization(original, transformed, tmp_path / "difference.png")
+    csv_path = export_evaluation_to_csv(results, tmp_path / "evaluation.csv")
+    assert Path(results["difference_path"]).exists()
+    assert Path(results["csv_path"]).exists()
+    assert difference_path.exists()
+    assert csv_path.exists()
+
+
+def test_run_analysis_pipeline_returns_metrics_and_frequency(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    image_path = _create_sample_image(tmp_path, "analysis_face.png")
+    monkeypatch.setattr("facial_image_warping.face_detection.load_haar_cascade", lambda: _FakeCascadeClassifier(np.array([[1, 1, 10, 10]])))
+    monkeypatch.setattr("facial_image_warping.landmark_detection.detect_face_mesh", lambda image, **kwargs: _FakeFaceMeshResults())
+    result = run_analysis_pipeline(str(image_path), transformation="smile_enhancement", intensity=0.5, show_landmarks=True)
+    assert result["metrics"]["mse"] >= 0
+    assert "original_high_low_ratio" in result["metrics"]
+    assert result["landmarks"] is not None
