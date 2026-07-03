@@ -1,199 +1,262 @@
-# Facial Image Warping, Aging, and Expression Transformation
+# Facial Image Warping
 
-This project provides a professional Python starter architecture for a digital signal processing (DSP) oriented facial image transformation system. It is designed to support expression editing, geometric facial warping, frequency-based aging and de-aging, Fourier analysis, and quantitative evaluation in a modular way.
+Bu repo, **Facial Image Warping, Aging, and Expression Transformation** projesinin ilk üç sprintinin çalışan temelini içerir. Şu ana kadar odak noktası, yüzü değiştirmekten önce veriyi **doğru almak**, **DSP açısından standardize etmek**, **yüz bölgesini ayırmak** ve **yüzü landmark noktalarıyla temsil etmek** oldu.
 
-Sprint 1 now implements the image input and preprocessing foundations using OpenCV, NumPy, Pillow, and Matplotlib.
-Sprint 2 now implements classical face detection using OpenCV Haar Cascade.
-Sprint 3 now implements facial landmark detection using MediaPipe Face Mesh.
+Mevcut durumda tamamlanan katmanlar:
 
-## System Purpose
+1. `Sprint 1` — Image input ve preprocessing
+2. `Sprint 2` — Face detection ve face crop
+3. `Sprint 3` — Facial landmark detection ve landmark export
 
-The system processes a frontal face image through a structured DSP workflow:
+Henüz tamamlanmayan katmanlar:
 
-`User Input -> Image Acquisition -> Preprocessing -> DSP/Image Processing -> Output Generation -> Performance Evaluation`
+- Geometric warping
+- Aging / de-aging
+- Fourier analysis
+- Quantitative evaluation
 
-The architecture is intentionally modular so each step can be developed, tested, and replaced independently.
+## DSP Mantığı
 
-## High-Level Architecture
+Bu projede görüntü, klasik bir fotoğraf dosyası gibi değil, **2 boyutlu sayısal sinyal** olarak ele alınır. Kurulan akış şu mantığa dayanır:
 
-### Pipeline Stages
+`User Input -> Image Acquisition -> Preprocessing -> ROI Extraction -> Landmark Representation -> Future DSP / Warping Stages`
+
+Bu zincirde şu ana kadar yapılan işler:
+
+- **Image acquisition**: giriş dosyasını doğrulama ve belleğe alma
+- **Preprocessing**: renk uzayı dönüşümü, grayscale, resize, normalize etme
+- **ROI extraction**: tüm görüntü yerine yalnızca yüz bölgesini seçme
+- **Geometric representation**: yüzü 468 landmark ile parametrik olarak ifade etme
+
+Bu sayede ileride yapılacak warping, aging ve frekans analizi işlemleri doğrudan ham görüntüye değil, temizlenmiş ve anlamlı hale getirilmiş yüz verisine uygulanır.
+
+## Şu Ana Kadarki Mimari
+
+### Ana modüller
 
 1. `input_module.py`
-   Handles image path validation and image loading requests.
+   Giriş dosyasını doğrular, görüntüyü yükler, metadata üretir.
 2. `preprocessing.py`
-   Normalizes image size, color space, and grayscale conversion for downstream processing.
+   `BGR/RGB/grayscale`, resize, normalization, histogram ve processed image üretir.
 3. `face_detection.py`
-   Detects and crops the face region from the input image.
+   OpenCV Haar Cascade ile yüz bulur, bounding box çizer, yüz crop alır.
 4. `landmark_detection.py`
-   Extracts facial landmarks and prepares geometric control points.
-5. `geometric_warping.py`
-   Applies expression manipulation such as smile enhancement, eyebrow raising, lip widening, and face slimming.
-6. `aging_filter.py`
-   Applies frequency-inspired aging and de-aging filters.
-7. `fourier_analysis.py`
-   Computes FFT-based magnitude and energy measurements.
-8. `evaluation.py`
-   Produces quantitative metrics such as MSE, PSNR, and SSIM.
-9. `visualization.py`
-   Prepares image comparison views, landmark overlays, and structured result summaries.
-10. `app.py`
-    Serves as the application entry point and orchestrates the end-to-end flow.
+   MediaPipe Face Mesh ile landmark çıkarır, JSON/CSV export yapar.
+5. `app.py`
+   Sprint bazlı pipeline giriş noktalarını sağlar.
 
-## Project Structure
+### Pipeline giriş noktaları
+
+- `run_preprocessing_pipeline(...)`
+- `run_face_detection_pipeline(...)`
+- `run_landmark_pipeline(...)`
+
+## Örnek Akış
+
+Aşağıdaki örnek, `samples/test_face_1.jpg` üzerinden sistemin şu ana kadar neleri ürettiğini gösterir.
+
+### 1. Örnek giriş yüzü
+
+Bu görsel sistemin aldığı ham inputtur. Bu aşamada henüz sinyal seçimi yoktur; arka plan ve yüz birlikte işlenir.
+
+![Sample Face](docs/images/sample-face.jpg)
+
+### 2. Preprocessed face
+
+Bu çıktı preprocessing adımından gelir:
+
+- görüntü okunur
+- standart çözünürlüğe taşınır
+- normalize edilir
+- sonraki aşamaların tutarlı çalışması için standardize edilir
+
+Bu adımın DSP karşılığı, giriş sinyalini ortak bir ölçeğe çekmek ve sonraki işlemlere uygun hale getirmektir.
+
+![Preprocessed Face](docs/images/preprocessed-face.png)
+
+### 3. Histogram çıktısı
+
+Histogram, görüntü yoğunluk dağılımını gösterir. Bu, sinyalin enerji dağılımı kadar güçlü bir analiz değildir ama preprocessing aşamasında parlaklık ve kontrast karakterini anlamak için temel bir araçtır.
+
+Bu çıktı özellikle şu sorular için anlamlıdır:
+
+- görüntü çok karanlık mı
+- çok açık mı
+- kontrast dar mı geniş mi
+
+![Histogram](docs/images/histogram.png)
+
+### 4. Detected face
+
+Bu aşamada OpenCV Haar Cascade ile yüz bulunur ve bounding box çizilir.
+
+Burada yapılan iş:
+
+- nesne tespiti
+- koordinat üretimi
+- ROI seçimi için yüz sınırını tanımlama
+
+DSP açısından bu adım, bütün sinyalden sadece anlamlı alt bölgeyi ayırmaya giden ilk adımdır.
+
+![Detected Face](docs/images/detected-face.png)
+
+### 5. Face crop
+
+Bounding box kullanılarak yüz bölgesi kesilir ve ayrı bir görüntü olarak normalize edilir.
+
+Bu adım çok kritiktir çünkü sonraki landmark, warping ve aging işlemleri tüm fotoğraf üzerinde değil, yalnızca bu ROI üzerinde yapılacaktır.
+
+Burada öğrendiğimiz kavramlar:
+
+- `bounding box`
+- `ROI`
+- `crop`
+- `coordinate system`
+
+![Face Crop](docs/images/face-crop.png)
+
+### 6. Landmark çıktısı
+
+Sprint 3 ile MediaPipe Face Mesh üzerinden landmark üretimi eklenmiştir. Çalışan akış sonunda şu dosyalar üretilir:
+
+- `outputs/landmarks/<name>_landmarks.png`
+- `outputs/landmarks/<name>_landmarks.json`
+- `outputs/landmarks/<name>_landmarks.csv`
+
+Bu landmark katmanında:
+
+- yüz 468 veya refine-landmarks ile daha yüksek sayıda landmark noktasıyla temsil edilir
+- seçili bölgeler (`eyes`, `nose`, `lips`, `eyebrows`, `jawline`, `cheeks`) ayrıca işaretlenebilir
+- koordinatlar hem normalize hem piksel uzayında dışa aktarılır
+
+Aşağıdaki örnek görsel, `test_face_1.jpg` için üretilen gerçek landmark overlay çıktısıdır:
+
+![Landmark Face](docs/images/landmarks-face.png)
+
+Bu aşama, geometric warping için kritik veri üretir. Sonraki sprintlerde ağız, kaş, göz, çene ve yanak deformasyonları doğrudan bu landmark koordinatları üzerinden yapılacaktır. Yani bu görsel yalnızca bir overlay değildir; yüzün parametrik temsilidir.
+
+## Landmark Koordinatlarının Mantığı
+
+MediaPipe, landmark noktalarını önce **normalize koordinat** olarak verir:
+
+- `x` değeri genişliğe göre `0-1`
+- `y` değeri yüksekliğe göre `0-1`
+
+Bu yaklaşımın avantajı:
+
+- farklı çözünürlüklerde aynı yüz geometrisini taşımak kolaylaşır
+- model ekran pikseline değil göreli konuma konuşur
+
+Ama OpenCV çizimi ve crop işlemleri için bu koordinatlar piksele çevrilmelidir. Bu yüzden `landmark_detection.py` içinde normalize değerler mutlak piksele dönüştürülür.
+
+## Şu Ana Kadar Hangi Gereksinimler Tamamlandı
+
+### Sprint 1
+
+- JPG ve PNG yükleme
+- dosya uzantısı ve varlık doğrulama
+- `BGR -> RGB -> GRAYSCALE` dönüşümleri
+- standart çözünürlükte resize
+- piksel normalizasyonu
+- histogram oluşturma
+- processed image kaydetme
+
+### Sprint 2
+
+- frontal face detection
+- bounding box çizme
+- detected face preview kaydetme
+- crop alma
+- crop’u normalize etme
+- yüz bulunamazsa açık hata verme
+
+### Sprint 3
+
+- MediaPipe ile face mesh çıkarma
+- full landmark visualization
+- region-based visualization
+- JSON export
+- CSV export
+- landmark visualization toggle
+
+## Dosya Yapısı
 
 ```text
 facial-image-warping/
 ├── app.py
 ├── pyproject.toml
 ├── README.md
+├── docs/
+│   └── images/
+├── samples/
 ├── src/
 │   └── facial_image_warping/
-│       ├── __init__.py
-│       ├── aging_filter.py
-│       ├── evaluation.py
 │       ├── face_detection.py
-│       ├── fourier_analysis.py
-│       ├── geometric_warping.py
 │       ├── input_module.py
 │       ├── landmark_detection.py
 │       ├── preprocessing.py
-│       └── visualization.py
+│       └── ...
 └── tests/
-    ├── __init__.py
-    └── test_smoke.py
 ```
 
-## Data Flow
+## Kurulum
 
-1. The user provides a facial image path or upload.
-2. The system validates and loads the image.
-3. The image is normalized for analysis.
-4. The face region is detected and cropped.
-5. Facial landmarks are extracted.
-6. One or more transformations are applied:
-   - geometric warping
-   - aging
-   - de-aging
-7. The original and transformed images are analyzed in the frequency domain.
-8. Evaluation metrics are computed.
-9. The results are prepared for display or export.
+Bu proje için sürümler, “en yeni olan” mantığıyla değil, **koddaki API kullanımıyla uyumlu** olacak şekilde seçildi.
 
-## Expected Outputs
+Özellikle:
 
-The completed implementation is expected to produce:
+- `opencv-python>=4.10,<5`
+- `mediapipe==0.10.9`
+- `numpy>=1.26,<2.0`
 
-- Original image preview
-- Face crop and normalized image
-- Landmark overlay visualization
-- Expression-transformed image
-- Aged and de-aged image variants
-- Fourier magnitude spectrum visualizations
-- Frequency energy comparison tables
-- Evaluation metrics including MSE, PSNR, and SSIM
-- Before/after comparison views
-- Exportable analysis results
-
-## Development Notes
-
-Sprint 1 includes:
-
-- loading JPG and PNG files
-- validating file format and existence
-- converting between BGR, RGB, and grayscale
-- resizing images to a standard resolution
-- normalizing pixel values to the `[0, 1]` range
-- generating and saving histograms
-- saving processed artifacts into `outputs/`
-
-Sprint 2 includes:
-
-- frontal-face detection with OpenCV Haar Cascade
-- grayscale conversion for detection input
-- bounding box generation
-- ROI cropping for the detected face
-- normalized face resizing to a standard output size
-- explicit error handling when no face is detected
-- saving detection previews into `outputs/faces/`
-
-Sprint 3 includes:
-
-- 468-point facial landmark detection with MediaPipe Face Mesh
-- full landmark point visualization
-- optional region-only overlays for eyes, eyebrows, nose, lips, jawline, and cheeks
-- landmark coordinate export to JSON and CSV
-- toggle-based visualization control
-- saving landmark outputs into `outputs/landmarks/`
-
-## Quick Start
-
-1. Create and activate a virtual environment.
-2. Install the package with development dependencies:
+Kurulum:
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-3. Run the tests:
+## Çalıştırma
+
+### Sprint 1
 
 ```bash
-pytest
+python -c "from app import run_preprocessing_pipeline; r = run_preprocessing_pipeline('samples/test_face_1.jpg'); print(r['processed_image_path']); print(r['histogram_path'])"
 ```
 
-4. Use Sprint 1 from Python:
+### Sprint 2
 
-```python
-from app import run_preprocessing_pipeline
-
-result = run_preprocessing_pipeline("path/to/face.png")
-print(result["processed_image_path"])
-print(result["histogram_path"])
-```
-
-Processed files are written under `outputs/`.
-
-Use Sprint 2 from Python:
-
-```python
-from app import run_face_detection_pipeline
-
-result = run_face_detection_pipeline("path/to/face.png")
-print(result["bounding_box"])
-print(result["cropped_face_path"])
-```
-
-Detected-face previews are written under `outputs/faces/`.
-
-Use Sprint 3 from Python:
-
-```python
-from app import run_landmark_pipeline
-
-result = run_landmark_pipeline(
-    "path/to/face.png",
-    show_full_mesh=True,
-    selected_regions=["eyes", "lips", "nose"],
-)
-print(result["landmark_count"])
-print(result["json_path"])
-print(result["csv_path"])
-```
-
-Landmark visualizations and exports are written under `outputs/landmarks/`.
-
-Sprint1 commands
-deactivate
-Remove-Item .venv -Recurse -Force
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip setuptools wheel
-pip install -e ".[dev]"
-pytest -q
-
-Sprint2 commands
-python -c "import cv2; print(cv2.__version__); print(hasattr(cv2, 'CascadeClassifier'))"
-python -c "from app import run_face_detection_pipeline; r = run_face_detection_pipeline('ornek_yuz.png'); print(r['bounding_box']); print(r['cropped_face_path'])"
-
-Sprint3 sample faces commands
-python -c "from app import run_preprocessing_pipeline; r = run_preprocessing_pipeline('samples/test_face_1.jpg'); print(r['processed_image_path'])"
+```bash
 python -c "from app import run_face_detection_pipeline; r = run_face_detection_pipeline('samples/test_face_1.jpg'); print(r['bounding_box']); print(r['cropped_face_path'])"
+```
+
+### Sprint 3
+
+```bash
 python -c "from app import run_landmark_pipeline; r = run_landmark_pipeline('samples/test_face_1.jpg', show_full_mesh=True, selected_regions=['eyes','nose','lips']); print(r['landmark_count']); print(r['json_path']); print(r['csv_path'])"
+```
+
+## Test Verileri
+
+Repo içinde test için üç örnek yüz vardır:
+
+- `samples/test_face_1.jpg`
+- `samples/test_face_2.png`
+- `samples/test_face_3.jpg`
+
+Bu görseller GUI olmadan, komut satırı üzerinden preprocessing, face detection ve landmark detection katmanlarını tek tek doğrulamak için kullanılır.
+
+## Mühendislik Özeti
+
+Bu noktaya kadar proje, “ham fotoğrafı alıp yüzü değiştiren bir uygulama” olmaktan çok, yüz dönüşüm sisteminin **güvenilir veri hazırlama altyapısını** kurmuş durumda.
+
+Şu an sistemin en önemli teknik kazanımları:
+
+- giriş verisini standardize etme
+- yüz ROI’sini ayırma
+- yüzü landmark tabanlı geometrik temsil haline getirme
+- ilerideki warping ve DSP aşamaları için sağlam veri hattı kurma
+
+Bir sonraki doğal aşama:
+
+- `geometric_warping.py` içinde landmark tabanlı yüz deformasyonu
+- ardından aging/de-aging ve Fourier tabanlı analiz katmanları
