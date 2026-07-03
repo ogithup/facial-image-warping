@@ -217,6 +217,12 @@ pip install -e ".[dev]"
 
 ## Çalıştırma
 
+terminal prompt şu olmalı:
+PS C:\facial-image-warping>
+
+Eğer prompt başka yerdeyse, önce:
+cd C:\facial-image-warping
+
 ### Sprint 1
 
 ```bash
