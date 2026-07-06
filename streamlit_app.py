@@ -1,4 +1,5 @@
 """Streamlit GUI for facial image warping, aging, transfer, and evaluation."""
+"""Streamlit GUI for facial image warping, aging, transfer, and evaluation."""
 
 from __future__ import annotations
 
@@ -19,9 +20,11 @@ pipeline_app = importlib.reload(pipeline_app)
 run_analysis_pipeline = getattr(pipeline_app, "run_analysis_pipeline")
 run_realtime_frame_pipeline = getattr(pipeline_app, "run_realtime_frame_pipeline")
 run_reference_expression_transfer_pipeline = getattr(pipeline_app, "run_reference_expression_transfer_pipeline")
+compare_reference_expression_transfer_methods = getattr(pipeline_app, "compare_reference_expression_transfer_methods")
 prepare_reference_expression_payload = getattr(pipeline_app, "prepare_reference_expression_payload")
 DEFAULT_LANDMARK_REGIONS = getattr(pipeline_app, "DEFAULT_LANDMARK_REGIONS", ["eyes", "lips", "nose"])
-DEFAULT_TRANSFER_REGIONS = getattr(pipeline_app, "DEFAULT_TRANSFER_REGIONS", ["eyes", "eyebrows", "nose", "lips"])
+DEFAULT_TRANSFER_REGIONS = getattr(pipeline_app, "DEFAULT_TRANSFER_REGIONS", ["eyes", "eyebrows", "lips"])
+DEFAULT_TRANSFER_METHOD = getattr(pipeline_app, "DEFAULT_TRANSFER_METHOD", "expression_coefficients")
 
 try:
     import av
@@ -47,6 +50,30 @@ REALTIME_TRANSFORMATION_OPTIONS = {
     "Reference Expression Transfer": "reference_expression_transfer",
 }
 REGION_OPTIONS = ["eyes", "eyebrows", "nose", "lips", "jawline", "cheeks"]
+TRANSFER_METHOD_OPTIONS = {
+    "Recommended Coefficients": "expression_coefficients",
+    "Thin Plate Spline": "tps",
+    "Safe Classical": "safe_classical",
+    "Auto Compare All": "auto_compare",
+}
+STREAM_QUALITY_PROFILES = {
+    "Low Latency": {"max_width": 480, "frame_skip_interval": 3, "frame_rate": 12},
+    "Balanced": {"max_width": 640, "frame_skip_interval": 2, "frame_rate": 15},
+    "High Quality": {"max_width": 960, "frame_skip_interval": 1, "frame_rate": 20},
+}
+
+
+def _resize_frame_for_realtime(frame: np.ndarray, max_width: int) -> np.ndarray:
+    """Downscale the incoming webcam frame to reduce live processing latency."""
+    height, width = frame.shape[:2]
+    if width <= max_width:
+        return frame
+    scale = max_width / max(width, 1)
+    return cv2.resize(
+        frame,
+        (int(round(width * scale)), int(round(height * scale))),
+        interpolation=cv2.INTER_AREA,
+    )
 
 
 def _image_dict_to_rgb(image: dict) -> np.ndarray:
@@ -62,6 +89,17 @@ def _image_dict_to_rgb(image: dict) -> np.ndarray:
     if color_space == "GRAYSCALE":
         return cv2.cvtColor(pixels, cv2.COLOR_GRAY2RGB)
     raise ValueError(f"Unsupported color space for display: {color_space}")
+
+
+def _enhance_preview(rgb: np.ndarray, min_width: int = 720) -> np.ndarray:
+    """Upscale small camera crops for cleaner GUI previews without touching analysis pixels."""
+    height, width = rgb.shape[:2]
+    if width >= min_width:
+        return rgb
+    scale = min_width / max(width, 1)
+    resized = cv2.resize(rgb, (int(round(width * scale)), int(round(height * scale))), interpolation=cv2.INTER_CUBIC)
+    softened = cv2.GaussianBlur(resized, (0, 0), 0.8)
+    return cv2.addWeighted(resized, 1.12, softened, -0.12, 0)
 
 
 def _spectrum_to_rgb(spectrum: np.ndarray) -> np.ndarray:
@@ -103,6 +141,14 @@ def _show_metrics(metrics: dict) -> None:
         {"Metric": "Transformed High/Low Ratio", "Value": metrics["transformed_high_low_ratio"]},
     ]
     st.subheader("Metric Table")
+    if "transfer_quality_score" in metrics:
+        metric_rows.extend(
+            [
+                {"Metric": "Transfer Score", "Value": metrics["transfer_quality_score"]},
+                {"Metric": "Expression Match", "Value": metrics["expression_match_score"]},
+                {"Metric": "Identity Preservation", "Value": metrics["identity_preservation_score"]},
+            ]
+        )
     st.table(metric_rows)
     st.subheader("Difference Visualization")
     st.image(str(metrics["difference_path"]), use_container_width=True)
@@ -181,14 +227,14 @@ def _render_standard_transform_tab() -> None:
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Original Face ROI")
-            st.image(_image_dict_to_rgb(result["face_detection"]["face_image"]), use_container_width=True)
+            st.image(_enhance_preview(_image_dict_to_rgb(result["face_detection"]["face_image"])), use_container_width=True)
         with col2:
             st.subheader("Transformed Result")
-            st.image(_image_dict_to_rgb(result["transformation"]["image"]), use_container_width=True)
+            st.image(_enhance_preview(_image_dict_to_rgb(result["transformation"]["image"])), use_container_width=True)
 
         if show_landmarks and result["landmarks"] is not None:
             st.subheader("Landmark Visualization")
-            st.image(_image_dict_to_rgb(result["landmarks"]["visualization"]), use_container_width=True)
+            st.image(_enhance_preview(_image_dict_to_rgb(result["landmarks"]["visualization"])), use_container_width=True)
 
         _show_frequency(result["original_frequency"], result["transformed_frequency"])
         _show_metrics(result["metrics"])
@@ -223,6 +269,13 @@ def _render_transfer_tab() -> None:
         default=list(DEFAULT_TRANSFER_REGIONS),
         key="transfer_regions",
     )
+    transfer_method_label = st.selectbox(
+        "Transfer method",
+        list(TRANSFER_METHOD_OPTIONS.keys()),
+        index=list(TRANSFER_METHOD_OPTIONS.values()).index(DEFAULT_TRANSFER_METHOD),
+        key="transfer_method",
+    )
+    transfer_method = TRANSFER_METHOD_OPTIONS[transfer_method_label]
 
     if source_file is None or reference_file is None:
         st.info("Provide both source and reference face images to run reference expression transfer.")
@@ -233,39 +286,63 @@ def _render_transfer_tab() -> None:
     try:
         source_temp = _save_uploaded_file(source_file)
         reference_temp = _save_uploaded_file(reference_file)
-        result = run_reference_expression_transfer_pipeline(
-            source_temp,
-            reference_temp,
-            blend_factor=blend_factor,
-            show_landmarks=show_landmarks,
-            selected_regions=selected_regions or list(DEFAULT_TRANSFER_REGIONS),
-        )
+        if transfer_method == "auto_compare":
+            comparison = compare_reference_expression_transfer_methods(
+                source_temp,
+                reference_temp,
+                blend_factor=blend_factor,
+                show_landmarks=show_landmarks,
+                selected_regions=selected_regions or list(DEFAULT_TRANSFER_REGIONS),
+            )
+            result = comparison["results"][comparison["best_method"]]
+        else:
+            comparison = None
+            result = run_reference_expression_transfer_pipeline(
+                source_temp,
+                reference_temp,
+                blend_factor=blend_factor,
+                show_landmarks=show_landmarks,
+                selected_regions=selected_regions or list(DEFAULT_TRANSFER_REGIONS),
+                transfer_method=transfer_method,
+            )
 
         top_left, top_right = st.columns(2)
         with top_left:
             st.subheader("Source Face ROI")
-            st.image(_image_dict_to_rgb(result["source_face_detection"]["face_image"]), use_container_width=True)
+            st.image(_enhance_preview(_image_dict_to_rgb(result["source_face_detection"]["face_image"])), use_container_width=True)
         with top_right:
             st.subheader("Transferred Result")
-            st.image(_image_dict_to_rgb(result["transformation"]["image"]), use_container_width=True)
+            st.image(_enhance_preview(_image_dict_to_rgb(result["transformation"]["image"])), use_container_width=True)
 
         ref_col1, ref_col2 = st.columns(2)
         with ref_col1:
             st.subheader("Reference Face ROI")
-            st.image(_image_dict_to_rgb(result["reference_face_detection"]["face_image"]), use_container_width=True)
+            st.image(_enhance_preview(_image_dict_to_rgb(result["reference_face_detection"]["face_image"])), use_container_width=True)
         with ref_col2:
             st.subheader("Transfer Explanation")
+            st.write(f"Method: `{result.get('transfer_method', DEFAULT_TRANSFER_METHOD)}`")
             for line in result["transformation"]["explanation"]:
                 st.write(f"- {line}")
+            if comparison is not None:
+                st.write("Ranking:")
+                st.table(
+                    [
+                        {
+                            "Method": method,
+                            "Score": f"{comparison['results'][method]['metrics']['transfer_quality_score']:.2f}",
+                        }
+                        for method in comparison["ranked_methods"]
+                    ]
+                )
 
         if show_landmarks:
             source_landmark_col, reference_landmark_col = st.columns(2)
             with source_landmark_col:
                 st.subheader("Source Landmarks")
-                st.image(_image_dict_to_rgb(result["source_landmarks"]["visualization"]), use_container_width=True)
+                st.image(_enhance_preview(_image_dict_to_rgb(result["source_landmarks"]["visualization"])), use_container_width=True)
             with reference_landmark_col:
                 st.subheader("Reference Landmarks")
-                st.image(_image_dict_to_rgb(result["reference_landmarks"]["visualization"]), use_container_width=True)
+                st.image(_enhance_preview(_image_dict_to_rgb(result["reference_landmarks"]["visualization"])), use_container_width=True)
 
         _show_frequency(result["original_frequency"], result["transformed_frequency"])
         _show_metrics(result["metrics"])
@@ -290,6 +367,13 @@ class RealtimeVideoProcessor:
         self.selected_regions = list(DEFAULT_LANDMARK_REGIONS)
         self.reference_payload = None
         self.last_error = None
+        self.frame_index = 0
+        self.last_output = None
+        self.previous_landmarks = None
+        self.previous_transformation = "aging"
+        self.max_width = 640
+        self.frame_skip_interval = 2
+        self.transfer_method = DEFAULT_TRANSFER_METHOD
 
     def recv(self, frame):  # pragma: no cover - exercised through Streamlit runtime
         image = frame.to_ndarray(format="bgr24")
@@ -300,15 +384,36 @@ class RealtimeVideoProcessor:
                 show_landmarks = self.show_landmarks
                 selected_regions = list(self.selected_regions)
                 reference_payload = self.reference_payload
-            result = run_realtime_frame_pipeline(
-                image,
-                transformation=transformation,
-                intensity=intensity,
-                show_landmarks=show_landmarks,
-                selected_regions=selected_regions,
-                reference_payload=reference_payload,
+                max_width = self.max_width
+                frame_skip_interval = self.frame_skip_interval
+                transfer_method = self.transfer_method
+            if transformation != self.previous_transformation:
+                self.previous_landmarks = None
+                self.last_output = None
+                self.previous_transformation = transformation
+            self.frame_index += 1
+            resized_image = _resize_frame_for_realtime(image, max_width=max_width)
+            should_reuse_last_frame = (
+                frame_skip_interval > 1
+                and self.last_output is not None
+                and self.frame_index % frame_skip_interval != 1
             )
-            output = result["composite_frame"]
+            if should_reuse_last_frame:
+                output = self.last_output.copy()
+            else:
+                result = run_realtime_frame_pipeline(
+                    resized_image,
+                    transformation=transformation,
+                    intensity=intensity,
+                    show_landmarks=show_landmarks,
+                    selected_regions=selected_regions,
+                    reference_payload=reference_payload,
+                    previous_landmarks=self.previous_landmarks,
+                    transfer_method=transfer_method,
+                )
+                output = result["composite_frame"]
+                self.last_output = output.copy()
+                self.previous_landmarks = result["landmarks"]["landmarks"] if result.get("landmarks") else None
             self.last_error = None
         except Exception as exc:
             output = image.copy()
@@ -337,10 +442,19 @@ def _render_realtime_stream() -> None:
         default=list(DEFAULT_TRANSFER_REGIONS if realtime_transformation == "reference_expression_transfer" else DEFAULT_LANDMARK_REGIONS),
         key="realtime_regions",
     )
+    quality_label = st.selectbox("Stream quality", list(STREAM_QUALITY_PROFILES.keys()), index=1, key="realtime_quality")
+    quality_profile = STREAM_QUALITY_PROFILES[quality_label]
 
     reference_payload = None
     reference_temp = None
     if realtime_transformation == "reference_expression_transfer":
+        live_transfer_method_label = st.selectbox(
+            "Live transfer method",
+            [label for label, value in TRANSFER_METHOD_OPTIONS.items() if value != "auto_compare"],
+            index=[value for value in TRANSFER_METHOD_OPTIONS.values() if value != "auto_compare"].index(DEFAULT_TRANSFER_METHOD),
+            key="realtime_transfer_method",
+        )
+        transfer_method = TRANSFER_METHOD_OPTIONS[live_transfer_method_label]
         reference_file = st.file_uploader("Reference image for live transfer", type=["jpg", "jpeg", "png"], key="realtime_reference")
         if reference_file is None:
             st.info("Upload a reference image to activate live reference expression transfer.")
@@ -352,14 +466,22 @@ def _render_realtime_stream() -> None:
                     show_landmarks=show_landmarks,
                     selected_regions=selected_regions or list(DEFAULT_TRANSFER_REGIONS),
                 )
-                st.image(_image_dict_to_rgb(reference_payload["face_detection"]["face_image"]), caption="Live reference face ROI", use_container_width=False)
+                st.image(_enhance_preview(_image_dict_to_rgb(reference_payload["face_detection"]["face_image"])), caption="Live reference face ROI", use_container_width=False)
             except Exception as exc:
                 st.error(f"Reference preparation failed: {exc}")
+    else:
+        transfer_method = DEFAULT_TRANSFER_METHOD
 
     webrtc_ctx = webrtc_streamer(
         key="facial-live-stream",
         mode=WebRtcMode.SENDRECV,
-        media_stream_constraints={"video": True, "audio": False},
+        media_stream_constraints={
+            "video": {
+                "width": {"ideal": quality_profile["max_width"]},
+                "frameRate": {"ideal": quality_profile["frame_rate"]},
+            },
+            "audio": False,
+        },
         rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
         async_processing=True,
         video_processor_factory=RealtimeVideoProcessor,
@@ -372,6 +494,9 @@ def _render_realtime_stream() -> None:
             webrtc_ctx.video_processor.show_landmarks = show_landmarks
             webrtc_ctx.video_processor.selected_regions = selected_regions or list(DEFAULT_LANDMARK_REGIONS)
             webrtc_ctx.video_processor.reference_payload = reference_payload
+            webrtc_ctx.video_processor.max_width = quality_profile["max_width"]
+            webrtc_ctx.video_processor.frame_skip_interval = quality_profile["frame_skip_interval"]
+            webrtc_ctx.video_processor.transfer_method = transfer_method
         if webrtc_ctx.video_processor.last_error:
             st.warning(webrtc_ctx.video_processor.last_error)
 

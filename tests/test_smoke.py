@@ -119,7 +119,8 @@ def test_detect_face_region_returns_bbox_and_saves_outputs(tmp_path: Path, monke
     result = detect_face_region(image, save_outputs=True)
     assert result["detector"] == "opencv_haar_cascade"
     assert result["bounding_box"] == (4, 5, 12, 10)
-    assert result["face_image"]["pixels"].shape == (512, 512, 3)
+    assert result["face_image"]["pixels"].shape == (10, 12, 3)
+    assert result["analysis_face_image"]["pixels"].shape == (512, 512, 3)
     assert Path(result["preview_path"]).exists()
     assert Path(result["cropped_face_path"]).exists()
 
@@ -151,7 +152,8 @@ def test_face_detection_pipeline_uses_preprocessing_and_detection(tmp_path: Path
     image_path = _create_sample_image(tmp_path, "face.png")
     monkeypatch.setattr("facial_image_warping.face_detection.load_haar_cascade", lambda: _FakeCascadeClassifier(np.array([[1, 1, 10, 10]])))
     result = run_face_detection_pipeline(str(image_path))
-    assert result["face_image"]["pixels"].shape == (512, 512, 3)
+    assert result["face_image"]["pixels"].shape == (10, 10, 3)
+    assert result["analysis_face_image"]["pixels"].shape == (512, 512, 3)
     assert result["face_coordinates"]["width"] == 10
 
 
@@ -408,7 +410,8 @@ def test_prepare_reference_expression_payload_returns_face_and_landmarks(tmp_pat
     monkeypatch.setattr("facial_image_warping.face_detection.load_haar_cascade", lambda: _FakeCascadeClassifier(np.array([[1, 1, 10, 10]])))
     monkeypatch.setattr("facial_image_warping.landmark_detection.detect_face_mesh", lambda image, **kwargs: _FakeFaceMeshResults())
     payload = prepare_reference_expression_payload(str(reference_path), show_landmarks=True, selected_regions=["eyes", "lips"])
-    assert payload["face_detection"]["face_image"]["pixels"].shape == (512, 512, 3)
+    assert payload["face_detection"]["face_image"]["pixels"].shape == (10, 10, 3)
+    assert payload["face_detection"]["analysis_face_image"]["pixels"].shape == (512, 512, 3)
     assert payload["landmarks"]["landmark_count"] == 468
 
 

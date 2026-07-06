@@ -150,7 +150,7 @@ def detect_face_region(
     target_size: tuple[int, int] = (512, 512),
     save_outputs: bool = True,
 ) -> dict:
-    """Detect, crop, normalize, and save the primary face region from an image.
+    """Detect, crop, and prepare analysis-ready variants of the primary face region.
 
     Parameters
     ----------
@@ -161,14 +161,15 @@ def detect_face_region(
     min_neighbors:
         Minimum neighbor count required to keep a detection.
     target_size:
-        Output size for the normalized face crop.
+        Output size for the analysis-ready normalized face crop.
     save_outputs:
         Whether to write face preview artifacts to ``outputs/faces``.
 
     Returns
     -------
     dict
-        Face crop, bounding box, preview paths, and detection metadata.
+        Original face crop, analysis-ready normalized crop, bounding box, preview
+        paths, and detection metadata.
     """
     grayscale = convert_to_detection_grayscale(image)
     classifier = load_haar_cascade()
@@ -186,7 +187,7 @@ def detect_face_region(
     bounding_box = select_largest_face(detections)
     boxed_preview = draw_face_bounding_box(image, bounding_box)
     cropped_face = crop_face_region(image, bounding_box)
-    normalized_face = resize_face_crop(cropped_face, target_size=target_size)
+    analysis_face = resize_face_crop(cropped_face, target_size=target_size)
 
     stem = Path(image.get("file_name", "image.png")).stem
     boxed_preview_path = FACES_OUTPUT_DIR / f"{stem}_detected_face.png"
@@ -194,11 +195,12 @@ def detect_face_region(
 
     if save_outputs:
         save_face_preview(boxed_preview, boxed_preview_path)
-        save_face_preview(normalized_face, cropped_face_path)
+        save_face_preview(cropped_face, cropped_face_path)
 
     x, y, w, h = bounding_box
     return {
-        "face_image": normalized_face,
+        "face_image": cropped_face,
+        "analysis_face_image": analysis_face,
         "bounding_box": bounding_box,
         "face_coordinates": {
             "x": x,
