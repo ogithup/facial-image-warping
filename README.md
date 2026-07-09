@@ -450,6 +450,85 @@ Eklenen muhendislik iyilestirmeleri:
 
 Bu sayede hem landmark overlay daha okunur hale gelir hem de real-time akis daha az donar.
 
+### Neden Local OpenCV / DroidCam fallback eklendi?
+
+Windows tarafinda browser tabanli `camera_input` ve WebRTC akislarinda su pratik problemler goruldu:
+
+- built-in kamera bazi cihazlarda hic acilmiyor
+- bazi laptoplarda kamera sadece `320x240` gibi dusuk bir modda acilip tekrar dusuyor
+- browser `SELECT DEVICE` ile secilen sanal/USB kamera her zaman Streamlit tarafina kararlı sekilde ulasmiyor
+- sayfa rerun modeli nedeniyle webcam goruntusu GIF benzeri titreme ve gecikme hissi uretebiliyor
+
+Bu nedenle projede ikinci bir yol eklendi:
+
+- `Real-Time Lab -> Live backend = Local OpenCV Device`
+- `Image Studio -> Camera capture -> Capture backend = Local OpenCV Device`
+
+Bu yol browser kamera erisimi yerine dogrudan `cv2.VideoCapture(...)` kullanir. Boylece:
+
+- USB kamera veya DroidCam device index ile acilir
+- `Image Studio` icinde browser izin popup'ina bagimli olmadan snapshot alinabilir
+- `Real-Time Lab` icinde kalici USB stream mantigi uygulanabilir
+- built-in kamera yoksa ya da kararsizsa harici kamera ile calismaya devam edilir
+
+Bu fallback, performans problemini tamamen cozulmus saymaz. Mevcut yapi:
+
+- daha dayanikli bir capture zinciri saglar
+- browser kaynakli cihaz secme problemlerini azaltir
+- ama yine de landmark, transform ve Streamlit render maliyetleri icin ek optimizasyon gerektirir
+
+Kisacasi: built-in kamera yoksa veya guvensiz calisiyorsa sistem su anda `Local OpenCV + DroidCam USB` yolu ile calisacak sekilde duzenlenmistir; sonraki adim performansi daha da artirmaktir.
+
+### Windows'ta hangi kamera index'i kullaniliyor?
+
+Device index makineden makineye degisir; sabit olarak `0` kabul edilmemelidir. Bu projede indeks tarama icin asagidaki komut eklendi:
+
+```bash
+python webcam_demo.py --probe-devices
+```
+
+Bu komut Windows/OpenCV tarafinda acilabilen kamera index'lerini listeler. Bu makinede test sirasinda:
+
+```text
+Available camera indices: 0, 3, 4
+```
+
+goruldu. Ardindan ham preview testi ile stabil acilan cihaz:
+
+```bash
+python webcam_demo.py --device-index 4 --raw-preview
+```
+
+olarak dogrulandi. Bu yuzden README ve GUI icindeki ornek ayarlarda `device index = 4` onerildi.
+
+Onemli not:
+
+- `0` genelde built-in kamera olabilir ama garanti degildir
+- `3` veya `4` DroidCam / external virtual camera olabilir
+- dogru index her zaman `--probe-devices` ile bulunmalidir
+
+### Streamlit icinde DroidCam / USB capture nasil kullanilir?
+
+`Image Studio` icin:
+
+1. `Source input = Camera capture`
+2. `Camera profile = DroidCam USB / External Virtual Camera`
+3. `Capture backend = Local OpenCV Device`
+4. `Capture device index = 4`
+5. once `Preview USB Frame`
+6. sonra `Capture From USB`
+
+Bu capture alindiginda kare ayni sayfada preview olarak gosterilir ve pipeline'a source image olarak girer.
+
+`Real-Time Lab` icin:
+
+1. `Live backend = Local OpenCV Device`
+2. `Live camera profile = DroidCam USB / External Virtual Camera`
+3. `Local device index = 4`
+4. `Keep USB stream active = On`
+
+Bu mod browser `SELECT DEVICE` mantigindan bagimsizdir ve USB/DroidCam akisini Streamlit icinde daha kalici tutmak icin eklendi.
+
 ### Agiz ici ve dis gorunurlugu neden ayri ele alindi?
 
 Acik agiz referanslarinda yalnizca dudak cizgisini asagi indirmek dogru sonuc vermez. Dis, mouth cavity ve ic dudak dokusu da gorunur olmalidir. Bu repo icindeki guncel transfer mantigi bu problemi kisitli da olsa ele alir:
@@ -596,6 +675,18 @@ python webcam_demo.py --transformation aging --intensity 0.6
 
 ```bash
 python webcam_demo.py --transformation reference_expression_transfer --reference-image samples/test_face_2.png --intensity 0.75
+```
+
+Windows cihaz index taramasi:
+
+```bash
+python webcam_demo.py --probe-devices
+```
+
+DroidCam / USB raw preview testi:
+
+```bash
+python webcam_demo.py --device-index 4 --raw-preview
 ```
 
 ### Sprint 10

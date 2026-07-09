@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import time
 
 import cv2
 import numpy as np
@@ -38,6 +39,17 @@ GUI_TRANSFORMATIONS = EXPRESSION_TRANSFORMATIONS | {"aging", "de-aging", "refere
 DEFAULT_LANDMARK_REGIONS = ["eyes", "lips", "nose"]
 DEFAULT_TRANSFER_REGIONS = ["eyes", "eyebrows", "lips"]
 DEFAULT_TRANSFER_METHOD = "expression_coefficients"
+DEFAULT_REALTIME_PROFILE = {
+    "profile_name": "balanced",
+    "max_width": 640,
+    "analysis_size": 320,
+    "landmark_max_dimension": 384,
+    "detection_interval": 2,
+    "tracking_padding": 0.18,
+    "frame_skip_interval": 2,
+    "smoothing_alpha": 0.65,
+    "reference_update_interval": 2,
+}
 
 
 def make_image_dict_from_bgr_frame(frame: np.ndarray, file_name: str = "frame.png") -> dict:
@@ -52,6 +64,89 @@ def make_image_dict_from_bgr_frame(frame: np.ndarray, file_name: str = "frame.pn
         "color_space": "BGR",
         "dtype": str(frame.dtype),
     }
+
+
+def _merge_realtime_profile(profile: dict | None) -> dict:
+    resolved = dict(DEFAULT_REALTIME_PROFILE)
+    if profile:
+        resolved.update({key: value for key, value in profile.items() if value is not None})
+    return resolved
+
+
+def _bbox_is_valid(frame_shape: tuple[int, ...], bbox: tuple[int, int, int, int] | None) -> bool:
+    if bbox is None:
+        return False
+    height, width = frame_shape[:2]
+    x, y, box_width, box_height = bbox
+    return (
+        box_width > 0
+        and box_height > 0
+        and x >= 0
+        and y >= 0
+        and x + box_width <= width
+        and y + box_height <= height
+    )
+
+
+def _expand_bbox(frame_shape: tuple[int, ...], bbox: tuple[int, int, int, int], padding_ratio: float) -> tuple[int, int, int, int]:
+    height, width = frame_shape[:2]
+    x, y, box_width, box_height = bbox
+    pad_x = int(round(box_width * padding_ratio))
+    pad_y = int(round(box_height * padding_ratio))
+    left = max(0, x - pad_x)
+    top = max(0, y - pad_y)
+    right = min(width, x + box_width + pad_x)
+    bottom = min(height, y + box_height + pad_y)
+    return left, top, max(1, right - left), max(1, bottom - top)
+
+
+def _crop_frame_with_bbox(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> dict:
+    x, y, width, height = bbox
+    face_crop = frame[y : y + height, x : x + width].copy()
+    return make_image_dict_from_bgr_frame(face_crop, file_name="webcam_face_crop.png")
+
+
+def _detect_face_with_strategy(
+    frame: np.ndarray,
+    frame_image: dict,
+    profile: dict,
+    previous_bbox: tuple[int, int, int, int] | None,
+    frame_index: int,
+) -> tuple[dict, dict]:
+    detection_interval = max(1, int(profile["detection_interval"]))
+    should_run_full_detection = (
+        previous_bbox is None
+        or frame_index <= 1
+        or (frame_index - 1) % detection_interval == 0
+        or not _bbox_is_valid(frame.shape, previous_bbox)
+    )
+    if should_run_full_detection:
+        face_result = detect_face_region(frame_image, save_outputs=False)
+        return face_result, {"mode": "detector", "reused_bbox": False}
+
+    tracking_bbox = _expand_bbox(frame.shape, previous_bbox, float(profile["tracking_padding"]))
+    tracked_face = _crop_frame_with_bbox(frame, tracking_bbox)
+    analysis_size = int(profile["analysis_size"])
+    tracked_analysis = _prepare_analysis_face(tracked_face, target_size=(analysis_size, analysis_size))
+    return (
+        {
+            "face_image": tracked_face,
+            "analysis_face_image": tracked_analysis,
+            "bounding_box": tracking_bbox,
+            "face_coordinates": {
+                "x": tracking_bbox[0],
+                "y": tracking_bbox[1],
+                "width": tracking_bbox[2],
+                "height": tracking_bbox[3],
+            },
+            "confidence_score": None,
+            "detector": "tracked_bbox_reuse",
+            "preview_path": None,
+            "cropped_face_path": None,
+            "detection_count": 1,
+        },
+        {"mode": "tracking", "reused_bbox": True},
+    )
 
 
 def _resize_for_bbox(face_pixels: np.ndarray, bbox: tuple[int, int, int, int]) -> np.ndarray:
@@ -71,14 +166,15 @@ def _composite_face_into_frame(frame: np.ndarray, bbox: tuple[int, int, int, int
 
 def _prepare_analysis_face(face_image: dict, target_size: tuple[int, int] = (512, 512)) -> dict:
     """Build a normalized copy for metrics and Fourier analysis without altering preview ROI size."""
-    pixels = cv2.resize(face_image["pixels"], target_size, interpolation=cv2.INTER_AREA)
+    normalized_target = (int(target_size[0]), int(target_size[1]))
+    pixels = cv2.resize(face_image["pixels"], normalized_target, interpolation=cv2.INTER_AREA)
     return {
         **face_image,
         "pixels": pixels,
-        "width": target_size[0],
-        "height": target_size[1],
+        "width": normalized_target[0],
+        "height": normalized_target[1],
         "shape": pixels.shape,
-        "target_size": target_size,
+        "target_size": normalized_target,
         "normalized_face": True,
     }
 
@@ -199,11 +295,12 @@ def _prepare_landmarks_if_needed(
     transformation: str,
     show_landmarks: bool,
     selected_regions: list[str],
+    landmark_max_dimension: int = 512,
 ) -> dict | None:
     needs_landmarks = show_landmarks or transformation in EXPRESSION_TRANSFORMATIONS or transformation == "reference_expression_transfer"
     if not needs_landmarks:
         return None
-    inference_face, scale = _prepare_landmark_inference_face(face_image)
+    inference_face, scale = _prepare_landmark_inference_face(face_image, max_dimension=landmark_max_dimension)
     landmarks_result = detect_landmarks(
         inference_face,
         show_full_mesh=show_landmarks and _should_render_full_mesh(selected_regions),
@@ -288,20 +385,39 @@ def run_realtime_frame_pipeline(
     selected_regions: list[str] | None = None,
     reference_payload: dict | None = None,
     previous_landmarks: list[dict] | None = None,
+    previous_bbox: tuple[int, int, int, int] | None = None,
+    frame_index: int = 1,
     smoothing_alpha: float = 0.65,
     transfer_method: str = DEFAULT_TRANSFER_METHOD,
+    realtime_profile: dict | None = None,
 ) -> dict:
     """Process a live webcam frame and return original/transformed previews."""
+    profile = _merge_realtime_profile(realtime_profile)
     selected_regions = selected_regions or (
         DEFAULT_TRANSFER_REGIONS if transformation == "reference_expression_transfer" else DEFAULT_LANDMARK_REGIONS
     )
+    timings: dict[str, float] = {}
+    stage_start = time.perf_counter()
     frame_image = make_image_dict_from_bgr_frame(frame, file_name="webcam_frame.png")
-    face_result = detect_face_region(frame_image, save_outputs=False)
+    timings["frame_prepare_ms"] = (time.perf_counter() - stage_start) * 1000.0
+
+    stage_start = time.perf_counter()
+    face_result, detection_debug = _detect_face_with_strategy(
+        frame,
+        frame_image,
+        profile=profile,
+        previous_bbox=previous_bbox,
+        frame_index=frame_index,
+    )
+    timings["face_detect_ms"] = (time.perf_counter() - stage_start) * 1000.0
+
+    stage_start = time.perf_counter()
     landmarks_result = _prepare_landmarks_if_needed(
         face_result["face_image"],
         transformation=transformation,
         show_landmarks=show_landmarks,
         selected_regions=selected_regions,
+        landmark_max_dimension=int(profile["landmark_max_dimension"]),
     )
     if landmarks_result is not None:
         smoothed_landmarks = _smooth_landmarks(
@@ -314,6 +430,9 @@ def run_realtime_frame_pipeline(
             "landmarks": smoothed_landmarks,
             "pixel_coordinates": [(landmark["x"], landmark["y"]) for landmark in smoothed_landmarks],
         }
+    timings["landmark_detect_ms"] = (time.perf_counter() - stage_start) * 1000.0
+
+    stage_start = time.perf_counter()
     transformed = _apply_selected_transformation(
         face_result["face_image"],
         transformation=transformation,
@@ -323,7 +442,9 @@ def run_realtime_frame_pipeline(
         selected_regions=selected_regions,
         transfer_method=transfer_method,
     )
+    timings["transform_ms"] = (time.perf_counter() - stage_start) * 1000.0
 
+    stage_start = time.perf_counter()
     original_frame = frame.copy()
     x, y, width, height = face_result["bounding_box"]
     cv2.rectangle(original_frame, (x, y), (x + width, y + height), (0, 255, 0), 2)
@@ -370,7 +491,9 @@ def run_realtime_frame_pipeline(
             )
     else:
         transformed_landmarks = None
+    timings["overlay_ms"] = (time.perf_counter() - stage_start) * 1000.0
 
+    stage_start = time.perf_counter()
     composite_frame = cv2.hconcat([original_frame, transformed_frame])
     cv2.putText(
         composite_frame,
@@ -380,6 +503,11 @@ def run_realtime_frame_pipeline(
         0.7,
         (0, 255, 0),
         2,
+    )
+    timings["compose_ms"] = (time.perf_counter() - stage_start) * 1000.0
+    timings["pipeline_total_ms"] = sum(
+        timings[key]
+        for key in ("frame_prepare_ms", "face_detect_ms", "landmark_detect_ms", "transform_ms", "overlay_ms", "compose_ms")
     )
 
     return {
@@ -391,6 +519,12 @@ def run_realtime_frame_pipeline(
         "original_frame": original_frame,
         "transformed_frame": transformed_frame,
         "composite_frame": composite_frame,
+        "timings": timings,
+        "debug": {
+            "detection_mode": detection_debug["mode"],
+            "reused_bbox": detection_debug["reused_bbox"],
+            "profile": profile,
+        },
     }
 
 

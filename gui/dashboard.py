@@ -7,6 +7,8 @@ import importlib
 import sys
 import tempfile
 import threading
+import time
+from typing import Any
 
 import cv2
 import numpy as np
@@ -40,6 +42,7 @@ except ImportError:  # pragma: no cover - optional runtime dependency path
 
 
 TRANSFORMATION_OPTIONS = {
+    "Raw Camera Debug": "raw_camera_debug",
     "Smile Enhancement": "smile_enhancement",
     "Eyebrow Raising": "eyebrow_raising",
     "Lip Widening": "lip_widening",
@@ -55,11 +58,82 @@ TRANSFER_METHOD_OPTIONS = {
     "Safe Classical": "safe_classical",
     "Auto Compare All": "auto_compare",
 }
-STREAM_QUALITY_PROFILES = {
-    "Low Latency": {"max_width": 480, "frame_skip_interval": 3, "frame_rate": 12},
-    "Balanced": {"max_width": 640, "frame_skip_interval": 2, "frame_rate": 15},
-    "High Quality": {"max_width": 960, "frame_skip_interval": 1, "frame_rate": 20},
+CAMERA_SOURCE_PROFILES = {
+    "Built-in Camera": {
+        "key": "builtin",
+        "description": "Laptop webcam for standard browser capture.",
+        "realtime_width": 640,
+        "realtime_height": 480,
+        "frame_rate_cap": None,
+        "aspect_ratio": None,
+        "constraint_mode": "standard",
+    },
+    "DroidCam USB / External Virtual Camera": {
+        "key": "droidcam",
+        "description": "Use browser SELECT DEVICE and choose DroidCam. Optimized for stable 4:3 USB virtual webcam capture.",
+        "realtime_width": 640,
+        "realtime_height": 480,
+        "frame_rate_cap": 12,
+        "aspect_ratio": 4 / 3,
+        "constraint_mode": "compatibility",
+    },
 }
+STREAM_QUALITY_PROFILES = {
+    "Ultra Safe": {
+        "profile_name": "ultra_safe",
+        "max_width": 320,
+        "analysis_size": 224,
+        "landmark_max_dimension": 256,
+        "frame_skip_interval": 4,
+        "detection_interval": 6,
+        "frame_rate": 8,
+        "smoothing_alpha": 0.5,
+        "tracking_padding": 0.14,
+        "reference_update_interval": 4,
+    },
+    "Fast": {
+        "profile_name": "fast",
+        "max_width": 432,
+        "analysis_size": 256,
+        "landmark_max_dimension": 320,
+        "frame_skip_interval": 3,
+        "detection_interval": 4,
+        "frame_rate": 12,
+        "smoothing_alpha": 0.55,
+        "tracking_padding": 0.16,
+        "reference_update_interval": 3,
+    },
+    "Balanced": {
+        "profile_name": "balanced",
+        "max_width": 640,
+        "analysis_size": 320,
+        "landmark_max_dimension": 384,
+        "frame_skip_interval": 2,
+        "detection_interval": 2,
+        "frame_rate": 15,
+        "smoothing_alpha": 0.65,
+        "tracking_padding": 0.18,
+        "reference_update_interval": 2,
+    },
+    "Quality": {
+        "profile_name": "quality",
+        "max_width": 896,
+        "analysis_size": 384,
+        "landmark_max_dimension": 512,
+        "frame_skip_interval": 1,
+        "detection_interval": 1,
+        "frame_rate": 20,
+        "smoothing_alpha": 0.72,
+        "tracking_padding": 0.2,
+        "reference_update_interval": 1,
+    },
+}
+
+LOCAL_CAPTURE_STATE_KEY = "dashboard_local_capture"
+LOCAL_LIVE_RUNNING_KEY = "dashboard_local_live_running"
+LOCAL_USB_PERSISTENT_KEY = "dashboard_local_usb_persistent"
+IMAGE_STUDIO_CAPTURE_FRAME_KEY = "dashboard_image_studio_capture_frame"
+LOCAL_STREAM_FRAGMENT_INTERVAL_SECONDS = 0.10
 
 
 def _resize_frame_for_realtime(frame: np.ndarray, max_width: int) -> np.ndarray:
@@ -76,6 +150,237 @@ def _resize_frame_for_realtime(frame: np.ndarray, max_width: int) -> np.ndarray:
     return resized
 
 
+def _build_live_media_constraints(quality_profile: dict, camera_profile: dict) -> dict:
+    if camera_profile.get("constraint_mode") == "compatibility":
+        return {
+            "video": True,
+            "audio": False,
+        }
+
+    width = int(min(quality_profile["max_width"], camera_profile["realtime_width"]))
+    height = int(round(width / camera_profile["aspect_ratio"])) if camera_profile.get("aspect_ratio") else camera_profile["realtime_height"]
+    frame_rate = quality_profile["frame_rate"]
+    if camera_profile.get("frame_rate_cap") is not None:
+        frame_rate = min(frame_rate, int(camera_profile["frame_rate_cap"]))
+    video_constraints: dict[str, object] = {
+        "width": {"ideal": width},
+        "height": {"ideal": int(height)},
+        "frameRate": {"ideal": int(frame_rate)},
+    }
+    if camera_profile.get("aspect_ratio") is not None:
+        video_constraints["aspectRatio"] = {"ideal": float(camera_profile["aspect_ratio"])}
+    return {"video": video_constraints, "audio": False}
+
+
+def _ensure_local_capture(device_index: int) -> cv2.VideoCapture:
+    capture = st.session_state.get(LOCAL_CAPTURE_STATE_KEY)
+    current_index = st.session_state.get(f"{LOCAL_CAPTURE_STATE_KEY}_index")
+    if capture is not None and current_index == device_index and capture.isOpened():
+        return capture
+
+    _release_local_capture()
+    capture = cv2.VideoCapture(device_index, cv2.CAP_DSHOW)
+    if not capture.isOpened():
+        capture.release()
+        raise RuntimeError(f"Failed to open local camera device index {device_index}.")
+    st.session_state[LOCAL_CAPTURE_STATE_KEY] = capture
+    st.session_state[f"{LOCAL_CAPTURE_STATE_KEY}_index"] = device_index
+    return capture
+
+
+def _release_local_capture() -> None:
+    capture = st.session_state.get(LOCAL_CAPTURE_STATE_KEY)
+    if capture is not None:
+        try:
+            capture.release()
+        except Exception:
+            pass
+    st.session_state.pop(LOCAL_CAPTURE_STATE_KEY, None)
+    st.session_state.pop(f"{LOCAL_CAPTURE_STATE_KEY}_index", None)
+
+
+def _read_local_capture_frame(device_index: int, max_width: int) -> np.ndarray:
+    capture = _ensure_local_capture(device_index)
+    ok, frame = capture.read()
+    if not ok or frame is None:
+        raise RuntimeError(f"Local camera device index {device_index} did not return a frame.")
+    return _resize_frame_for_realtime(frame, max_width=max_width)
+
+
+def _render_local_capture_frame(
+    frame: np.ndarray,
+    transformation: str,
+    intensity: float,
+    show_landmarks: bool,
+    selected_regions: list[str],
+    reference_payload: dict | None,
+    transfer_method: str,
+    quality_profile: dict,
+    raw_preview_only: bool,
+) -> tuple[np.ndarray, dict[str, float], str | None]:
+    frame_start = time.perf_counter()
+    if raw_preview_only or transformation == "raw_camera_debug":
+        preview = frame.copy()
+        cv2.putText(preview, "Raw camera debug - Local OpenCV mode", (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        return preview, {"pipeline_total_ms": float((time.perf_counter() - frame_start) * 1000.0)}, None
+
+    previous_landmarks = st.session_state.get("dashboard_local_previous_landmarks")
+    previous_bbox = st.session_state.get("dashboard_local_previous_bbox")
+    frame_index = int(st.session_state.get("dashboard_local_frame_index", 0)) + 1
+    st.session_state["dashboard_local_frame_index"] = frame_index
+    try:
+        result = run_realtime_frame_pipeline(
+            frame,
+            transformation=transformation,
+            intensity=intensity,
+            show_landmarks=show_landmarks,
+            selected_regions=selected_regions,
+            reference_payload=reference_payload,
+            previous_landmarks=previous_landmarks,
+            previous_bbox=previous_bbox,
+            frame_index=frame_index,
+            smoothing_alpha=float(quality_profile["smoothing_alpha"]),
+            transfer_method=transfer_method,
+            realtime_profile=quality_profile,
+        )
+        st.session_state["dashboard_local_previous_landmarks"] = result["landmarks"]["landmarks"] if result.get("landmarks") else None
+        st.session_state["dashboard_local_previous_bbox"] = result["face_detection"]["bounding_box"]
+        st.session_state["dashboard_local_last_good_frame"] = result["composite_frame"].copy()
+        return result["composite_frame"], result["timings"], None
+    except Exception as exc:
+        fallback = st.session_state.get("dashboard_local_last_good_frame")
+        warning_frame = fallback.copy() if fallback is not None else frame.copy()
+        cv2.putText(
+            warning_frame,
+            str(exc)[:100],
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 0, 255),
+            2,
+        )
+        cv2.putText(
+            warning_frame,
+            "Stream kept alive - waiting for a clearer face",
+            (10, 58),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 255),
+            1,
+        )
+        return (
+            warning_frame,
+            {"pipeline_total_ms": float((time.perf_counter() - frame_start) * 1000.0)},
+            str(exc),
+        )
+
+
+def _reset_local_pipeline_state() -> None:
+    st.session_state["dashboard_local_previous_landmarks"] = None
+    st.session_state["dashboard_local_previous_bbox"] = None
+    st.session_state["dashboard_local_frame_index"] = 0
+    st.session_state["dashboard_local_last_good_frame"] = None
+
+
+def _render_local_stream_frame(
+    local_device_index: int,
+    transformation: str,
+    intensity: float,
+    show_landmarks: bool,
+    selected_regions: list[str],
+    default_regions: list[str],
+    reference_payload: dict | None,
+    transfer_method: str,
+    quality_profile: dict,
+    raw_preview_only: bool,
+) -> None:
+    if not st.session_state.get(LOCAL_LIVE_RUNNING_KEY, False):
+        st.info("Choose `Local OpenCV Device`, set `device index = 4` for DroidCam, then enable `Keep USB stream active` or press `Start Local Stream`.")
+        return
+
+    try:
+        frame = _read_local_capture_frame(local_device_index, max_width=int(quality_profile["max_width"]))
+        rendered_frame, local_timings, local_warning = _render_local_capture_frame(
+            frame,
+            transformation=transformation,
+            intensity=intensity,
+            show_landmarks=show_landmarks,
+            selected_regions=selected_regions or list(default_regions),
+            reference_payload=reference_payload,
+            transfer_method=transfer_method,
+            quality_profile=quality_profile,
+            raw_preview_only=raw_preview_only,
+        )
+        st.image(cv2.cvtColor(rendered_frame, cv2.COLOR_BGR2RGB), use_container_width=True)
+        st.caption(
+            f"Local OpenCV device {local_device_index} | frame {st.session_state.get('dashboard_local_frame_index', 0)} | "
+            f"pipeline {local_timings.get('pipeline_total_ms', 0.0):.1f} ms"
+        )
+        if local_warning:
+            st.warning(local_warning)
+    except Exception as exc:
+        st.error(f"Local OpenCV stream failed: {exc}")
+        st.session_state[LOCAL_LIVE_RUNNING_KEY] = False
+        _release_local_capture()
+        _reset_local_pipeline_state()
+
+
+if hasattr(st, "fragment"):
+    @st.fragment(run_every=LOCAL_STREAM_FRAGMENT_INTERVAL_SECONDS)
+    def _render_local_stream_fragment(
+        local_device_index: int,
+        transformation: str,
+        intensity: float,
+        show_landmarks: bool,
+        selected_regions: list[str],
+        default_regions: list[str],
+        reference_payload: dict | None,
+        transfer_method: str,
+        quality_profile: dict,
+        raw_preview_only: bool,
+    ) -> None:
+        _render_local_stream_frame(
+            local_device_index=local_device_index,
+            transformation=transformation,
+            intensity=intensity,
+            show_landmarks=show_landmarks,
+            selected_regions=selected_regions,
+            default_regions=default_regions,
+            reference_payload=reference_payload,
+            transfer_method=transfer_method,
+            quality_profile=quality_profile,
+            raw_preview_only=raw_preview_only,
+        )
+else:
+    def _render_local_stream_fragment(
+        local_device_index: int,
+        transformation: str,
+        intensity: float,
+        show_landmarks: bool,
+        selected_regions: list[str],
+        default_regions: list[str],
+        reference_payload: dict | None,
+        transfer_method: str,
+        quality_profile: dict,
+        raw_preview_only: bool,
+    ) -> None:
+        _render_local_stream_frame(
+            local_device_index=local_device_index,
+            transformation=transformation,
+            intensity=intensity,
+            show_landmarks=show_landmarks,
+            selected_regions=selected_regions,
+            default_regions=default_regions,
+            reference_payload=reference_payload,
+            transfer_method=transfer_method,
+            quality_profile=quality_profile,
+            raw_preview_only=raw_preview_only,
+        )
+        if st.session_state.get(LOCAL_LIVE_RUNNING_KEY, False):
+            time.sleep(0.12 if transformation == "reference_expression_transfer" else 0.08)
+            st.rerun()
+
+
 class RealtimeVideoProcessor:
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -88,12 +393,19 @@ class RealtimeVideoProcessor:
         self.frame_index = 0
         self.last_output = None
         self.previous_landmarks = None
+        self.previous_bbox = None
         self.previous_transformation = "aging"
         self.max_width = 640
         self.frame_skip_interval = 2
         self.transfer_method = DEFAULT_TRANSFER_METHOD
+        self.realtime_profile = dict(STREAM_QUALITY_PROFILES["Balanced"])
+        self.last_stats = None
+        self.stats_history: list[dict[str, float]] = []
+        self.max_stats_history = 30
+        self.raw_preview_only = False
 
     def recv(self, frame):  # pragma: no cover - exercised through Streamlit runtime
+        recv_start = time.perf_counter()
         image = frame.to_ndarray(format="bgr24")
         try:
             with self.lock:
@@ -105,33 +417,107 @@ class RealtimeVideoProcessor:
                 max_width = self.max_width
                 frame_skip_interval = self.frame_skip_interval
                 transfer_method = self.transfer_method
+                realtime_profile = dict(self.realtime_profile)
+                raw_preview_only = self.raw_preview_only
             if transformation != self.previous_transformation:
                 self.previous_landmarks = None
+                self.previous_bbox = None
                 self.last_output = None
                 self.previous_transformation = transformation
             self.frame_index += 1
+            resize_start = time.perf_counter()
             resized_image = _resize_frame_for_realtime(image, max_width=max_width)
+            resize_ms = float((time.perf_counter() - resize_start) * 1000.0)
+            effective_skip_interval = frame_skip_interval
+            if transformation == "reference_expression_transfer":
+                effective_skip_interval = max(
+                    frame_skip_interval,
+                    int(realtime_profile.get("reference_update_interval", frame_skip_interval)),
+                )
             should_reuse_last_frame = (
-                frame_skip_interval > 1
+                effective_skip_interval > 1
                 and self.last_output is not None
-                and self.frame_index % frame_skip_interval != 1
+                and self.frame_index % effective_skip_interval != 1
             )
             if should_reuse_last_frame:
                 output = self.last_output.copy()
+                last_pipeline_total = self.last_stats["pipeline_total_ms"] if self.last_stats else 0.0
+                self.last_stats = {
+                    **(self.last_stats or {}),
+                    "frame_index": float(self.frame_index),
+                    "frame_reused": 1.0,
+                    "resize_ms": resize_ms,
+                    "capture_ms": float((time.perf_counter() - recv_start) * 1000.0),
+                    "estimated_streamlit_render_ms": max(0.0, float((time.perf_counter() - recv_start) * 1000.0) - last_pipeline_total),
+                }
+                self.stats_history.append(self.last_stats)
+                if len(self.stats_history) > self.max_stats_history:
+                    self.stats_history = self.stats_history[-self.max_stats_history :]
             else:
-                result = run_realtime_frame_pipeline(
-                    resized_image,
-                    transformation=transformation,
-                    intensity=intensity,
-                    show_landmarks=show_landmarks,
-                    selected_regions=selected_regions,
-                    reference_payload=reference_payload,
-                    previous_landmarks=self.previous_landmarks,
-                    transfer_method=transfer_method,
-                )
-                output = result["composite_frame"]
-                self.last_output = output.copy()
-                self.previous_landmarks = result["landmarks"]["landmarks"] if result.get("landmarks") else None
+                if raw_preview_only or transformation == "raw_camera_debug":
+                    output = resized_image.copy()
+                    cv2.putText(
+                        output,
+                        "Raw camera debug - processing bypassed",
+                        (10, 28),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (0, 255, 0),
+                        2,
+                    )
+                    self.last_output = output.copy()
+                    self.previous_landmarks = None
+                    self.previous_bbox = None
+                    pipeline_total_ms = float((time.perf_counter() - recv_start) * 1000.0)
+                    self.last_stats = {
+                        "frame_prepare_ms": 0.0,
+                        "face_detect_ms": 0.0,
+                        "landmark_detect_ms": 0.0,
+                        "transform_ms": 0.0,
+                        "overlay_ms": 0.0,
+                        "compose_ms": 0.0,
+                        "pipeline_total_ms": pipeline_total_ms,
+                        "frame_index": float(self.frame_index),
+                        "frame_reused": 0.0,
+                        "resize_ms": resize_ms,
+                        "capture_ms": pipeline_total_ms,
+                        "estimated_streamlit_render_ms": 0.0,
+                        "detection_reused": 0.0,
+                    }
+                else:
+                    result = run_realtime_frame_pipeline(
+                        resized_image,
+                        transformation=transformation,
+                        intensity=intensity,
+                        show_landmarks=show_landmarks,
+                        selected_regions=selected_regions,
+                        reference_payload=reference_payload,
+                        previous_landmarks=self.previous_landmarks,
+                        previous_bbox=self.previous_bbox,
+                        frame_index=self.frame_index,
+                        smoothing_alpha=float(realtime_profile["smoothing_alpha"]),
+                        transfer_method=transfer_method,
+                        realtime_profile=realtime_profile,
+                    )
+                    output = result["composite_frame"]
+                    self.last_output = output.copy()
+                    self.previous_landmarks = result["landmarks"]["landmarks"] if result.get("landmarks") else None
+                    self.previous_bbox = result["face_detection"]["bounding_box"]
+                    self.last_stats = {
+                        **result["timings"],
+                        "frame_index": float(self.frame_index),
+                        "frame_reused": 0.0,
+                        "resize_ms": resize_ms,
+                        "capture_ms": float((time.perf_counter() - recv_start) * 1000.0),
+                        "estimated_streamlit_render_ms": max(
+                            0.0,
+                            float((time.perf_counter() - recv_start) * 1000.0) - result["timings"]["pipeline_total_ms"],
+                        ),
+                        "detection_reused": 1.0 if result["debug"]["reused_bbox"] else 0.0,
+                    }
+                self.stats_history.append(self.last_stats)
+                if len(self.stats_history) > self.max_stats_history:
+                    self.stats_history = self.stats_history[-self.max_stats_history :]
             self.last_error = None
         except Exception as exc:
             output = image.copy()
@@ -201,6 +587,19 @@ def _save_uploaded_file(uploaded_file) -> str:
         return temp_file.name
 
 
+def _save_bytes_to_temp(data: bytes, suffix: str = ".png") -> str:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        temp_file.write(data)
+        return temp_file.name
+
+
+def _encode_bgr_image(image: np.ndarray) -> bytes:
+    success, buffer = cv2.imencode(".png", image)
+    if not success:
+        raise ValueError("Failed to encode captured camera frame.")
+    return bytes(buffer)
+
+
 def _cleanup_paths(paths: list[str | None]) -> None:
     for temp_path in paths:
         if temp_path:
@@ -248,6 +647,33 @@ def _show_metric(label: str, value: str) -> None:
         f"<div class='card'><div class='metric-label'>{label}</div><div class='metric-value'>{value}</div></div>",
         unsafe_allow_html=True,
     )
+
+
+def _summarize_realtime_stats(history: list[dict[str, float]] | None) -> dict[str, float] | None:
+    if not history:
+        return None
+    keys = [
+        "capture_ms",
+        "resize_ms",
+        "pipeline_total_ms",
+        "face_detect_ms",
+        "landmark_detect_ms",
+        "transform_ms",
+        "overlay_ms",
+        "compose_ms",
+        "estimated_streamlit_render_ms",
+        "frame_reused",
+        "detection_reused",
+    ]
+    summary: dict[str, float] = {}
+    for key in keys:
+        values = [item[key] for item in history if key in item]
+        if values:
+            summary[key] = float(np.mean(values))
+            summary[f"{key}_p95"] = float(np.percentile(values, 95))
+    if summary.get("capture_ms", 0.0) > 0.0:
+        summary["estimated_fps"] = 1000.0 / summary["capture_ms"]
+    return summary
 
 
 def _explanation_lines(result: dict) -> list[str]:
@@ -332,9 +758,57 @@ def _render_bottom_analysis(result: dict, transformed_rgb: np.ndarray, title_pre
 def _render_image_mode() -> None:
     st.sidebar.markdown("## Controls")
     source_mode = st.sidebar.radio("Source input", ["Upload image", "Camera capture"], horizontal=False)
+    selected_file = None
+    selected_bytes = None
+    if source_mode == "Camera capture":
+        camera_profile_label = st.sidebar.selectbox("Camera profile", list(CAMERA_SOURCE_PROFILES.keys()), index=1, key="dashboard_camera_profile")
+        camera_profile = CAMERA_SOURCE_PROFILES[camera_profile_label]
+        capture_backend = st.sidebar.selectbox(
+            "Capture backend",
+            ["Browser Camera", "Local OpenCV Device"],
+            index=1,
+            key="dashboard_capture_backend",
+        )
+    else:
+        camera_profile_label = "Built-in Camera"
+        camera_profile = CAMERA_SOURCE_PROFILES[camera_profile_label]
+        capture_backend = "Browser Camera"
     uploaded_file = st.sidebar.file_uploader("Source image", type=["jpg", "jpeg", "png"], key="dashboard_source") if source_mode == "Upload image" else None
-    camera_file = st.sidebar.camera_input("Capture source frame", key="dashboard_camera") if source_mode == "Camera capture" else None
-    selected_file = uploaded_file or camera_file
+    if source_mode == "Upload image":
+        selected_file = uploaded_file
+        st.session_state.pop(IMAGE_STUDIO_CAPTURE_FRAME_KEY, None)
+    elif capture_backend == "Browser Camera":
+        camera_file = st.sidebar.camera_input("Capture source frame", key="dashboard_camera")
+        selected_file = camera_file
+        if camera_file is not None:
+            st.session_state.pop(IMAGE_STUDIO_CAPTURE_FRAME_KEY, None)
+    else:
+        local_capture_index = st.sidebar.number_input(
+            "Capture device index",
+            min_value=0,
+            max_value=16,
+            value=4,
+            step=1,
+            key="dashboard_capture_device_index",
+        )
+        preview_requested = st.sidebar.button("Preview USB Frame", key="dashboard_preview_usb_frame", use_container_width=True)
+        capture_requested = st.sidebar.button("Capture From USB", key="dashboard_capture_usb_frame", use_container_width=True)
+        if preview_requested or capture_requested:
+            try:
+                captured_frame = _read_local_capture_frame(local_capture_index, max_width=int(camera_profile["realtime_width"]))
+                capture_payload = {
+                    "bytes": _encode_bgr_image(captured_frame),
+                    "rgb": cv2.cvtColor(captured_frame, cv2.COLOR_BGR2RGB),
+                    "device_index": int(local_capture_index),
+                }
+                st.session_state[IMAGE_STUDIO_CAPTURE_FRAME_KEY] = capture_payload
+                if capture_requested:
+                    st.sidebar.success(f"Captured frame from local device {local_capture_index}.")
+            except Exception as exc:
+                st.sidebar.error(f"Local USB capture failed: {exc}")
+        stored_capture = st.session_state.get(IMAGE_STUDIO_CAPTURE_FRAME_KEY)
+        if stored_capture is not None:
+            selected_bytes = stored_capture["bytes"]
 
     transformation_label = st.sidebar.selectbox("Transformation", list(TRANSFORMATION_OPTIONS.keys()))
     transformation = TRANSFORMATION_OPTIONS[transformation_label]
@@ -359,8 +833,23 @@ def _render_image_mode() -> None:
 
     st.markdown("## Image Studio")
     st.caption("Left panel controls the pipeline. Center shows source and transformed previews. Right panel exposes engineering metrics and explanations.")
+    if source_mode == "Camera capture":
+        if capture_backend == "Local OpenCV Device":
+            st.info(
+                f"Camera profile: `{camera_profile_label}`. Local OpenCV capture is enabled for device-index based USB/DroidCam snapshots. "
+                "Use `Preview USB Frame` to verify the feed and `Capture From USB` to push the frame into Image Studio."
+            )
+            stored_capture = st.session_state.get(IMAGE_STUDIO_CAPTURE_FRAME_KEY)
+            if stored_capture is not None:
+                st.markdown("### Captured Camera Preview")
+                st.image(_enhance_preview(stored_capture["rgb"]), caption=f"Local device {stored_capture['device_index']}", use_container_width=True)
+        else:
+            st.info(
+                f"Camera profile: `{camera_profile_label}`. {camera_profile['description']} "
+                "If multiple cameras exist, pick the external device from the browser camera selector before capture."
+            )
 
-    if selected_file is None:
+    if selected_file is None and selected_bytes is None:
         st.info("Provide a source face image from upload or camera capture.")
         return
     if transformation == "reference_expression_transfer" and reference_file is None:
@@ -370,7 +859,10 @@ def _render_image_mode() -> None:
     source_temp = None
     reference_temp = None
     try:
-        source_temp = _save_uploaded_file(selected_file)
+        if selected_bytes is not None:
+            source_temp = _save_bytes_to_temp(selected_bytes, suffix=".png")
+        else:
+            source_temp = _save_uploaded_file(selected_file)
         comparison = None
         if reference_file is not None:
             reference_temp = _save_uploaded_file(reference_file)
@@ -452,14 +944,40 @@ def _render_image_mode() -> None:
 
 def _render_realtime_mode() -> None:
     st.sidebar.markdown("## Real-Time Controls")
+    live_backend = st.sidebar.selectbox("Live backend", ["Browser WebRTC", "Local OpenCV Device"], index=1, key="live_backend")
     transformation_label = st.sidebar.selectbox("Live transformation", list(TRANSFORMATION_OPTIONS.keys()), key="live_transform")
     transformation = TRANSFORMATION_OPTIONS[transformation_label]
+    camera_profile_label = st.sidebar.selectbox(
+        "Live camera profile",
+        list(CAMERA_SOURCE_PROFILES.keys()),
+        index=1,
+        key="live_camera_profile",
+    )
+    camera_profile = CAMERA_SOURCE_PROFILES[camera_profile_label]
     intensity = st.sidebar.slider("Live intensity", min_value=0.0, max_value=1.0, value=0.55, step=0.05, key="live_intensity")
     show_landmarks = st.sidebar.toggle("Live landmarks", value=False, key="live_landmarks")
     default_regions = DEFAULT_TRANSFER_REGIONS if transformation == "reference_expression_transfer" else DEFAULT_LANDMARK_REGIONS
     selected_regions = st.sidebar.multiselect("Live regions", REGION_OPTIONS, default=list(default_regions), key="live_regions")
     quality_label = st.sidebar.selectbox("Stream quality", list(STREAM_QUALITY_PROFILES.keys()), index=1, key="live_quality")
     quality_profile = STREAM_QUALITY_PROFILES[quality_label]
+    raw_preview_only = st.sidebar.toggle("Raw preview only", value=transformation == "raw_camera_debug", key="live_raw_preview")
+    local_device_index = st.sidebar.number_input("Local device index", min_value=0, max_value=16, value=4, step=1, key="live_local_device_index")
+    persistent_usb_stream = st.sidebar.toggle(
+        "Keep USB stream active",
+        value=st.session_state.get(LOCAL_USB_PERSISTENT_KEY, True),
+        key=LOCAL_USB_PERSISTENT_KEY,
+        help="When enabled, the Local OpenCV USB camera restarts automatically after Streamlit reruns.",
+    )
+
+    if live_backend != "Local OpenCV Device":
+        persistent_usb_stream = False
+        st.session_state[LOCAL_USB_PERSISTENT_KEY] = False
+        if st.session_state.get(LOCAL_LIVE_RUNNING_KEY, False):
+            st.session_state[LOCAL_LIVE_RUNNING_KEY] = False
+            _release_local_capture()
+            _reset_local_pipeline_state()
+    elif persistent_usb_stream:
+        st.session_state[LOCAL_LIVE_RUNNING_KEY] = True
 
     reference_payload = None
     reference_temp = None
@@ -486,21 +1004,22 @@ def _render_realtime_mode() -> None:
         transfer_method = DEFAULT_TRANSFER_METHOD
 
     st.markdown("## Real-Time Lab")
-    st.caption("Browser webcam mode keeps the backend pipeline intact. The live stream shows source on the left and transformed output on the right.")
+    st.caption("Live preview runs in a latency-oriented pipeline. Snapshot analysis below uses the full offline Image Studio path for higher-quality metrics and exports.")
+    st.info(
+        f"Live camera profile: `{camera_profile_label}`. {camera_profile['description']} "
+        "For DroidCam USB, start DroidCam first, then click `SELECT DEVICE` in the player and choose the DroidCam device. "
+        "This profile uses compatibility mode, so the browser can open the selected external camera with fewer constraint conflicts."
+    )
+    st.caption("Recommended USB setup: `Live backend = Local OpenCV Device`, `camera profile = DroidCam USB`, `device index = 4`, and `Keep USB stream active = On`.")
+    st.caption("Browser `SELECT DEVICE` is optional now. For persistent USB capture, prefer the Local OpenCV backend.")
 
     top_col, side_col = st.columns([2.2, 1.0])
     with top_col:
-        if STREAMLIT_WEBRTC_AVAILABLE:
+        if live_backend == "Browser WebRTC" and STREAMLIT_WEBRTC_AVAILABLE:
             webrtc_ctx = webrtc_streamer(
                 key="modern-facial-live-stream",
                 mode=WebRtcMode.SENDRECV,
-                media_stream_constraints={
-                    "video": {
-                        "width": {"ideal": quality_profile["max_width"]},
-                        "frameRate": {"ideal": quality_profile["frame_rate"]},
-                    },
-                    "audio": False,
-                },
+                media_stream_constraints=_build_live_media_constraints(quality_profile, camera_profile),
                 rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
                 async_processing=True,
                 video_processor_factory=RealtimeVideoProcessor,
@@ -515,26 +1034,94 @@ def _render_realtime_mode() -> None:
                     webrtc_ctx.video_processor.max_width = quality_profile["max_width"]
                     webrtc_ctx.video_processor.frame_skip_interval = quality_profile["frame_skip_interval"]
                     webrtc_ctx.video_processor.transfer_method = transfer_method
+                    webrtc_ctx.video_processor.realtime_profile = dict(quality_profile)
+                    webrtc_ctx.video_processor.raw_preview_only = raw_preview_only
                 if webrtc_ctx.video_processor.last_error:
                     st.warning(webrtc_ctx.video_processor.last_error)
-        else:
+        elif live_backend == "Browser WebRTC":
             st.warning("Install `streamlit-webrtc` and `av` to enable browser real-time streaming.")
             st.code("pip install -e \".[dev]\"", language="bash")
+        else:
+            st.markdown("### Local OpenCV Stream")
+            st.caption("This mode bypasses browser camera access and keeps the selected USB/OpenCV camera active directly inside Streamlit.")
+            control_col1, control_col2 = st.columns([1, 1])
+            with control_col1:
+                if st.button("Start Local Stream", key="start_local_stream", use_container_width=True):
+                    st.session_state[LOCAL_LIVE_RUNNING_KEY] = True
+                    st.session_state[LOCAL_USB_PERSISTENT_KEY] = True
+                    _reset_local_pipeline_state()
+            with control_col2:
+                if st.button("Release USB Camera", key="stop_local_stream", use_container_width=True):
+                    st.session_state[LOCAL_LIVE_RUNNING_KEY] = False
+                    st.session_state[LOCAL_USB_PERSISTENT_KEY] = False
+                    _release_local_capture()
+                    _reset_local_pipeline_state()
+            if st.session_state.get(LOCAL_USB_PERSISTENT_KEY, False):
+                st.success(f"Persistent USB stream active on device index {local_device_index}. The stream will auto-recover after normal Streamlit reruns.")
+            _render_local_stream_fragment(
+                local_device_index=local_device_index,
+                transformation=transformation,
+                intensity=intensity,
+                show_landmarks=show_landmarks,
+                selected_regions=selected_regions,
+                default_regions=list(default_regions),
+                reference_payload=reference_payload,
+                transfer_method=transfer_method,
+                quality_profile=quality_profile,
+                raw_preview_only=raw_preview_only,
+            )
 
         st.markdown("### Snapshot Analysis")
-        snapshot = st.camera_input("Capture a frame for metrics, Fourier analysis, and exports.", key="realtime_snapshot")
+        if STREAMLIT_WEBRTC_AVAILABLE:
+            st.info(
+                "Live stream and Streamlit `camera_input` should not access the same webcam at the same time. "
+                "Use Image Studio > Camera Capture for a fresh snapshot, or upload a saved frame below."
+            )
+            snapshot = st.file_uploader(
+                "Upload a snapshot frame for metrics, Fourier analysis, and exports.",
+                type=["jpg", "jpeg", "png"],
+                key="realtime_snapshot_upload",
+            )
+        else:
+            snapshot = st.camera_input(
+                "Capture a frame for metrics, Fourier analysis, and exports.",
+                key="realtime_snapshot",
+            )
     with side_col:
         st.markdown("### Live Status")
+        _show_metric("Backend", live_backend)
         _show_metric("Transformation", transformation)
         _show_metric("Intensity", f"{intensity:.2f}")
         _show_metric("Landmark Overlay", "On" if show_landmarks else "Off")
         _show_metric("Region Count", str(len(selected_regions or default_regions)))
         _show_metric("Stream Quality", quality_label)
+        _show_metric("Camera Profile", camera_profile_label)
+        if live_backend == "Local OpenCV Device":
+            _show_metric("Device Index", str(local_device_index))
+            _show_metric("Persistent USB", "On" if st.session_state.get(LOCAL_USB_PERSISTENT_KEY, False) else "Off")
+        _show_metric("Detect Every", f"{quality_profile['detection_interval']} frame")
+        _show_metric("Analysis Face", f"{quality_profile['analysis_size']} px")
         if transformation == "reference_expression_transfer":
             _show_metric("Method", transfer_method)
         if reference_payload is not None:
             _show_metric("Reference Face", "Ready")
             st.image(_enhance_preview(_image_dict_to_rgb(reference_payload["face_detection"]["face_image"])), caption="Reference ROI", use_container_width=True)
+        if STREAMLIT_WEBRTC_AVAILABLE and "webrtc_ctx" in locals() and webrtc_ctx.video_processor:
+            stats_summary = _summarize_realtime_stats(webrtc_ctx.video_processor.stats_history)
+            if stats_summary is not None:
+                st.markdown("### Live Profiler")
+                _show_metric("Avg Total", f"{stats_summary['capture_ms']:.1f} ms")
+                _show_metric("p95 Total", f"{stats_summary['capture_ms_p95']:.1f} ms")
+                _show_metric("Estimated FPS", f"{stats_summary['estimated_fps']:.1f}")
+                _show_metric("Resize", f"{stats_summary.get('resize_ms', 0.0):.1f} ms")
+                _show_metric("Detect", f"{stats_summary.get('face_detect_ms', 0.0):.1f} ms")
+                _show_metric("Landmark", f"{stats_summary.get('landmark_detect_ms', 0.0):.1f} ms")
+                _show_metric("Transform", f"{stats_summary.get('transform_ms', 0.0):.1f} ms")
+                _show_metric("Overlay", f"{stats_summary.get('overlay_ms', 0.0):.1f} ms")
+                _show_metric("Streamlit Overhead", f"{stats_summary.get('estimated_streamlit_render_ms', 0.0):.1f} ms")
+                _show_metric("BBox Reuse", f"{stats_summary.get('detection_reused', 0.0) * 100:.0f}%")
+                _show_metric("Frame Reuse", f"{stats_summary.get('frame_reused', 0.0) * 100:.0f}%")
+                st.caption("`Streamlit Overhead` is an estimated UI/transport cost measured outside the backend pipeline.")
 
     if snapshot is not None:
         temp_path = None

@@ -430,6 +430,9 @@ def test_run_realtime_frame_pipeline_returns_live_preview(monkeypatch) -> None:
     assert result["original_frame"].shape[0] == frame.shape[0]
     assert result["transformed_frame"].shape[1] == frame.shape[1]
     assert result["composite_frame"].shape[1] == frame.shape[1] * 2
+    assert result["timings"]["pipeline_total_ms"] >= 0
+    assert result["debug"]["detection_mode"] in {"detector", "tracking"}
+    assert "face_detect_ms" in result["timings"]
 
 
 def test_reference_expression_transfer_pipeline_runs_with_mocked_dependencies(tmp_path: Path, monkeypatch) -> None:

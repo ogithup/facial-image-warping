@@ -86,6 +86,16 @@ def create_image_difference_visualization(
     original_rgb, transformed_rgb = _prepare_pair(original_image, transformed_image)
     absolute_difference = cv2.absdiff(original_rgb, transformed_rgb)
     grayscale_difference = cv2.cvtColor(absolute_difference, cv2.COLOR_RGB2GRAY)
+    difference_for_display = grayscale_difference
+    if np.any(grayscale_difference):
+        # Normalize visualization contrast so subtle TPS movements remain visible.
+        lower_bound = float(np.percentile(grayscale_difference, 1))
+        upper_bound = float(np.percentile(grayscale_difference, 99))
+        if upper_bound <= lower_bound:
+            upper_bound = float(np.max(grayscale_difference))
+        if upper_bound > lower_bound:
+            clipped = np.clip(grayscale_difference.astype(np.float32), lower_bound, upper_bound)
+            difference_for_display = cv2.normalize(clipped, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
     plt.figure(figsize=(12, 4))
     plt.subplot(1, 3, 1)
@@ -99,7 +109,7 @@ def create_image_difference_visualization(
     plt.axis("off")
 
     plt.subplot(1, 3, 3)
-    plt.imshow(grayscale_difference, cmap="inferno")
+    plt.imshow(difference_for_display, cmap="inferno")
     plt.title("Absolute Difference")
     plt.axis("off")
 
