@@ -67,6 +67,8 @@ Bu sayede aging, de-aging, kalite analizi, webcam denemeleri ve referans ifadeye
    Referans yuzden ifade geometrisini source yuze aktarir; `safe_classical`, `tps` ve `expression_coefficients` methodlarini icerir.
 12. `webcam_demo.py`
    OpenCV tabanli gercek zamanli webcam donusum demosunu calistirir.
+13. `desktop_gui.py`
+   Tkinter tabanli masaustu arayuzdur; `Image Studio` ve `Real-Time Lab` akislarini browser olmadan local OpenCV ile calistirir.
 
 ### Pipeline giris noktalari
 
@@ -529,6 +531,45 @@ Bu capture alindiginda kare ayni sayfada preview olarak gosterilir ve pipeline'a
 
 Bu mod browser `SELECT DEVICE` mantigindan bagimsizdir ve USB/DroidCam akisini Streamlit icinde daha kalici tutmak icin eklendi.
 
+### Neden ayrica masaustu GUI eklendi?
+
+Streamlit arayuzu hizli prototipleme icin faydali oldu; ancak bu projede:
+
+- real-time kamera akisi
+- landmark detection
+- reference expression transfer
+- surekli preview guncelleme
+
+bir araya gelince `rerun` tabanli UI modelinin dogal sinirlarina carpmaya baslandi. Bu nedenle projeye ek olarak `Tkinter` tabanli masaustu GUI eklendi.
+
+Masaustu katmanin amaci:
+
+- mevcut backend pipeline'i korumak
+- browser / WebRTC / `camera_input` bagimliligini azaltmak
+- local OpenCV kamera akisini daha kararlı kullanmak
+- `Image Studio` ve `Real-Time Lab` akislarini masaustu pencerede sunmak
+
+Masaustu GUI icindeki guncel ozellikler:
+
+- `Image Studio` sekmesi
+- `Real-Time Lab` sekmesi
+- source image upload
+- local OpenCV camera snapshot preview ve capture
+- reference image secimi
+- transformation secimi
+- transfer method secimi
+- region secimi
+- intensity slider ve yuzde gosterimi
+- `Source Preview` ve `Transformed Preview` icin buyuk ust panel
+- `Landmark Overlay`, `Reference Preview`, `Fourier Before`, `Absolute Difference` icin sekmeli alt panel
+- scrollable pencere yerlesimi
+- metrics paneli
+- transformed PNG / metrics CSV / difference PNG export
+- local OpenCV live stream
+- live frame'i `Image Studio` icine snapshot olarak tasima
+
+Bu yapi Streamlit'i kaldirmiyor; ona ek olarak masaustu kullanim secenegi sunuyor.
+
 ### Agiz ici ve dis gorunurlugu neden ayri ele alindi?
 
 Acik agiz referanslarinda yalnizca dudak cizgisini asagi indirmek dogru sonuc vermez. Dis, mouth cavity ve ic dudak dokusu da gorunur olmalidir. Bu repo icindeki guncel transfer mantigi bu problemi kisitli da olsa ele alir:
@@ -667,6 +708,29 @@ Modern ayri GUI katmani:
 ```bash
 streamlit run gui/dashboard.py
 ```
+
+Masaustu GUI:
+
+```bash
+python desktop_gui.py
+```
+
+Masaustu GUI kullanim akisi:
+
+1. `python desktop_gui.py` ile pencereyi ac
+2. `Image Studio` sekmesinde source image sec veya `Capture From Camera` kullan
+3. gerekiyorsa reference image sec
+4. transformation, intensity ve regions ayarlarini yap
+5. `Run Pipeline` ile sonucu uret
+6. `Save Transformed PNG`, `Save Metrics CSV`, `Save Difference PNG` ile export al
+
+`Real-Time Lab` icin:
+
+1. `Live Device Index` alanina dogru OpenCV index'ini gir
+2. gerekirse ortak reference image sec
+3. `Start Live` ile local OpenCV akisini baslat
+4. `Analyze Current Frame in Image Studio` ile canli frameden statik analiz al
+
 ### Sprint 9
 
 ```bash
